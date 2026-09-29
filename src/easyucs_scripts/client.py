@@ -10,6 +10,7 @@ import requests
 
 API_PATH = "/api/v1"
 REQUEST_TIMEOUT_SECONDS = 60
+_UNFINISHED_TASK_STATUSES = ("pending", "in_progress")
 
 
 class EasyUCSError(Exception):
@@ -43,32 +44,31 @@ class EasyUCSClient:
             for device in payload["devices"]
         ]
 
-    def fetch(self, device: Device, *, poll_interval: float = 2.0) -> None:
+    def fetch(self, device: Device, *, poll_interval: float) -> None:
         """Fetch a fresh Config and Inventory of `device`, and wait until the Instance has stored them."""
-        response = self._request(
-            "POST",
-            f"/devices/{device.uuid}/actions/fetch_config_and_inventory",
-            json={"force": False},
-        )
-        task_uuid = _json(response)["task"]
+        # The combined `fetch_config_and_inventory` action is refused for some device types
+        # (Intersight: "Unsupported device type"), so Config and Inventory are fetched separately.
+        for collection, label in (("configs", "Config"), ("inventories", "Inventory")):
+            response = self._request("POST", f"/devices/{device.uuid}/{collection}/actions/fetch", json={"force": False})
+            self._wait_for_task(_json(response)["task"], f"{label} Fetch of Device {device.name!r}", poll_interval)
+
+    def _wait_for_task(self, task_uuid: str, description: str, poll_interval: float) -> None:
         while True:
-            task = self._get_json(f"/tasks/{task_uuid}")
+            task = self._get_json(f"/tasks/{task_uuid}")["task"]
             status = task.get("status")
             if status == "successful":
                 return
-            if status != "in_progress":
-                raise EasyUCSError(
-                    f"Fetch of Device {device.name!r} ended with status {status!r}: {task.get('status_message')}"
-                )
+            if status not in _UNFINISHED_TASK_STATUSES:
+                raise EasyUCSError(f"{description} ended with status {status!r}: {task.get('status_message')}")
             time.sleep(poll_interval)
 
     def download_latest_config(self, device: Device) -> bytes:
-        return self._download_latest(device, "configs", "config_uuid", "Config")
+        return self._download_latest(device, "configs", "Config")
 
     def download_latest_inventory(self, device: Device) -> bytes:
-        return self._download_latest(device, "inventories", "inventory_uuid", "Inventory")
+        return self._download_latest(device, "inventories", "Inventory")
 
-    def _download_latest(self, device: Device, collection: str, uuid_key: str, label: str) -> bytes:
+    def _download_latest(self, device: Device, collection: str, label: str) -> bytes:
         listing = self._get_json(
             f"/devices/{device.uuid}/{collection}",
             params={"order_by_attribute": "timestamp", "order_by_direction": "desc", "page_size": 1},
@@ -76,7 +76,7 @@ class EasyUCSClient:
         items = listing.get(collection) or []
         if not items:
             raise EasyUCSError(f"Device {device.name!r} has no stored {label}")
-        latest_uuid = items[0][uuid_key]
+        latest_uuid = items[0]["uuid"]
         return self._request("GET", f"/devices/{device.uuid}/{collection}/{latest_uuid}/actions/download").content
 
     def _get_json(self, path: str, **kwargs: Any) -> Any:
@@ -86,10 +86,19 @@ class EasyUCSClient:
         url = self.api_url + path
         try:
             response = self._session.request(method, url, timeout=REQUEST_TIMEOUT_SECONDS, **kwargs)
-            response.raise_for_status()
         except requests.RequestException as exc:
             raise EasyUCSError(f"{method} {url} failed: {exc}") from exc
+        if not response.ok:
+            raise EasyUCSError(f"{method} {url} failed: HTTP {response.status_code}: {_error_message(response)}")
         return response
+
+
+def _error_message(response: requests.Response) -> str:
+    try:
+        message = response.json().get("message")
+    except (ValueError, AttributeError):
+        message = None
+    return message if isinstance(message, str) else response.reason
 
 
 def _json(response: requests.Response) -> Any:

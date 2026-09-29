@@ -1,8 +1,13 @@
 """A fake EasyUCS Instance: a standard-library HTTP server serving the API under `/api/v1`.
 
 Tests build a scenario by adding Devices, point `eucs` at `FakeEasyUCS.url`, and inspect
-the Devices afterwards. Every Device starts with one stored Config and Inventory; each
-Fetch stores a new, distinguishable pair, so tests can tell fresh artifacts from stale ones.
+the Devices afterwards. Every Device starts with one stored Config and Inventory. A Fetch
+task reports `pending`, then `in_progress`, and stores a new, distinguishable artifact only
+when it reports `successful`, so tests can tell fresh artifacts from stale ones.
+
+The behaviour mirrors a real EasyUCS 1.0.6 where it differs from its published OpenAPI spec:
+tasks are wrapped in `{"task": ...}`, listed artifacts are identified by `uuid`, and task
+statuses include `pending`.
 """
 
 from __future__ import annotations
@@ -21,6 +26,7 @@ from urllib.parse import parse_qs, urlsplit
 
 API_PREFIX = "/api/v1"
 _EPOCH = datetime(2026, 1, 1, tzinfo=timezone.utc)
+_TASK_STATUSES_BEFORE_SUCCESS = ("pending", "in_progress")
 
 
 @dataclass
@@ -35,10 +41,10 @@ class FakeDevice:
     name: str
     device_type: str
     is_system: bool
+    fetch_error: Optional[str]
     uuid: str = field(default_factory=lambda: str(uuid.uuid4()))
     configs: list[StoredArtifact] = field(default_factory=list)
     inventories: list[StoredArtifact] = field(default_factory=list)
-    fetch_count: int = 0
 
     @property
     def latest_config(self) -> bytes:
@@ -48,11 +54,26 @@ class FakeDevice:
     def latest_inventory(self) -> bytes:
         return max(self.inventories, key=lambda a: a.timestamp).content
 
+    @property
+    def configs_fetched(self) -> int:
+        return len(self.configs) - 1
+
+    @property
+    def inventories_fetched(self) -> int:
+        return len(self.inventories) - 1
+
+
+@dataclass
+class _FetchTask:
+    device: FakeDevice
+    collection: str
+    polls: int = 0
+
 
 class FakeEasyUCS:
     def __init__(self) -> None:
         self.devices: list[FakeDevice] = []
-        self._tasks: dict[str, dict[str, Any]] = {}
+        self._tasks: dict[str, _FetchTask] = {}
         self._clock = itertools.count(1)
         self._lock = threading.Lock()
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), _handler_for(self))
@@ -80,17 +101,26 @@ class FakeEasyUCS:
         self._server.server_close()
         self._thread.join()
 
-    def add_device(self, name: str, device_type: str = "ucsm", *, is_system: bool = False) -> FakeDevice:
-        device = FakeDevice(name=name, device_type=device_type, is_system=is_system)
-        self._store_artifacts(device)
+    def add_device(
+        self,
+        name: str,
+        device_type: str = "ucsm",
+        *,
+        is_system: bool = False,
+        fetch_error: Optional[str] = None,
+    ) -> FakeDevice:
+        """Add a Device. With `fetch_error`, EasyUCS refuses its Fetches with HTTP 500 and that message."""
+        device = FakeDevice(name=name, device_type=device_type, is_system=is_system, fetch_error=fetch_error)
+        self._store_artifact(device, "configs")
+        self._store_artifact(device, "inventories")
         self.devices.append(device)
         return device
 
-    def _store_artifacts(self, device: FakeDevice) -> None:
+    def _store_artifact(self, device: FakeDevice, collection: str) -> None:
+        artifacts = _artifacts(device, collection)
+        content = json.dumps({"device": device.name, collection: f"fetch #{len(artifacts)}"}).encode()
         timestamp = (_EPOCH + timedelta(minutes=next(self._clock))).isoformat()
-        for kind, store in (("config", device.configs), ("inventory", device.inventories)):
-            content = json.dumps({"device": device.name, kind: f"fetch #{device.fetch_count}"}).encode()
-            store.append(StoredArtifact(uuid=str(uuid.uuid4()), timestamp=timestamp, content=content))
+        artifacts.append(StoredArtifact(uuid=str(uuid.uuid4()), timestamp=timestamp, content=content))
 
     # Request handling, called from the server threads.
 
@@ -103,13 +133,13 @@ class FakeEasyUCS:
             if method == "GET" and path == "/devices":
                 return 200, {"devices": [_device_payload(d) for d in self.devices]}
 
-            match = re.fullmatch(r"/devices/([^/]+)/actions/fetch_config_and_inventory", path)
+            match = re.fullmatch(r"/devices/([^/]+)/(configs|inventories)/actions/fetch", path)
             if method == "POST" and match:
-                return self._start_fetch(match.group(1))
+                return self._start_fetch(match.group(1), match.group(2))
 
             match = re.fullmatch(r"/tasks/([^/]+)", path)
             if method == "GET" and match and match.group(1) in self._tasks:
-                return 200, self._tasks[match.group(1)]
+                return 200, {"task": self._poll(match.group(1))}
 
             match = re.fullmatch(r"/devices/([^/]+)/(configs|inventories)", path)
             if method == "GET" and match:
@@ -132,17 +162,27 @@ class FakeEasyUCS:
     def _device(self, device_uuid: str) -> Optional[FakeDevice]:
         return next((d for d in self.devices if d.uuid == device_uuid), None)
 
-    def _start_fetch(self, device_uuid: str) -> tuple[int, Any]:
+    def _start_fetch(self, device_uuid: str, collection: str) -> tuple[int, Any]:
         device = self._device(device_uuid)
         if device is None:
             return 404, {"message": "Device not found"}
         if device.is_system:
             return 500, {"message": "Catalog Devices cannot be fetched"}
-        device.fetch_count += 1
-        self._store_artifacts(device)
+        if device.fetch_error is not None:
+            return 500, {"message": device.fetch_error}
         task_uuid = str(uuid.uuid4())
-        self._tasks[task_uuid] = {"status": "successful", "progress": 100, "status_message": "Fetch complete"}
+        self._tasks[task_uuid] = _FetchTask(device=device, collection=collection)
         return 200, {"task": task_uuid}
+
+    def _poll(self, task_uuid: str) -> dict[str, Any]:
+        task = self._tasks[task_uuid]
+        task.polls += 1
+        payload = {"uuid": task_uuid, "device_uuid": task.device.uuid, "device_name": task.device.name}
+        if task.polls <= len(_TASK_STATUSES_BEFORE_SUCCESS):
+            return {**payload, "status": _TASK_STATUSES_BEFORE_SUCCESS[task.polls - 1], "progress": 50}
+        if task.polls == len(_TASK_STATUSES_BEFORE_SUCCESS) + 1:
+            self._store_artifact(task.device, task.collection)
+        return {**payload, "status": "successful", "progress": 100, "status_message": "Successfully completed task"}
 
 
 def _device_payload(device: FakeDevice) -> dict[str, Any]:
@@ -162,14 +202,13 @@ def _artifacts(device: FakeDevice, collection: str) -> list[StoredArtifact]:
 
 
 def _listing(collection: str, artifacts: list[StoredArtifact], query: dict[str, list[str]]) -> dict[str, Any]:
-    """List artifacts oldest first unless the caller asks for another order, as EasyUCS does."""
+    """List artifacts oldest first unless the caller asks for another order."""
     ordered = list(artifacts)
     if query.get("order_by_attribute") == ["timestamp"]:
         ordered.sort(key=lambda a: a.timestamp, reverse=query.get("order_by_direction") == ["desc"])
     if "page_size" in query:
         ordered = ordered[: int(query["page_size"][0])]
-    uuid_key = "config_uuid" if collection == "configs" else "inventory_uuid"
-    return {collection: [{uuid_key: a.uuid, "timestamp": a.timestamp} for a in ordered]}
+    return {collection: [{"uuid": a.uuid, "timestamp": a.timestamp} for a in ordered]}
 
 
 def _handler_for(fake: FakeEasyUCS) -> type[BaseHTTPRequestHandler]:

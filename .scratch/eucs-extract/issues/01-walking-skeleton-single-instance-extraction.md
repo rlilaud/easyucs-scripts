@@ -26,7 +26,7 @@ See the parent spec: `.scratch/eucs-extract/spec.md` (API contract, output layou
 Implemented on branch `01-walking-skeleton`. Notes for the next tickets:
 
 - The CI workflow (`.github/workflows/tests.yml`, Python 3.9 and 3.13) has not run on GitHub yet; Python 3.9 was not available locally.
-- The fake EasyUCS completes every Fetch task immediately, so the `in_progress` polling loop is not exercised yet. Ticket 02 (hidden polling interval, `failed`/`skipped`/timeout scenarios) should make task status scenario-configurable.
-- The Config/Inventory listing shape (`{"configs": [{"config_uuid", "timestamp"}]}`, `{"inventories": [{"inventory_uuid", ...}]}`) and query parameters are assumed; confirm with `EUCS_TEST_URL` against a real Instance.
+- First run against a real EasyUCS 1.0.6 (one Intersight Device) found four differences from the published API spec; the spec's API contract is updated: separate Config and Inventory Fetches (combined Fetch refused for Intersight), task wrapped in `{"task": ...}`, `pending` status, listed items keyed by `uuid`. The integration test now passes against that Instance (about 6 minutes).
+- The hidden `--poll-interval` option (from ticket 02) already exists so tests can exercise `pending` → `in_progress` → `successful` without waiting. Ticket 02 still owns `failed`/`skipped`/timeout scenarios; the fake's task statuses are not yet scenario-configurable.
 - Unexpected response shapes (`KeyError`) and disk errors still end in a traceback; ticket 02 owns failure handling.
 - Device names that sanitise to the same folder name get `_2`, `_3`... suffixes.

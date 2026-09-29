@@ -128,10 +128,12 @@ All user-facing text (help, errors, documentation) is in English.
 - API root is `<instance root URL>/api/v1`. The `servers` URL in EasyUCS's published spec is wrong (hard-coded port), so the tool never reads it; the user provides the root URL.
 - List Devices: `GET /devices` returns `devices[]` with `device_uuid`, `device_name`, `device_type` (`cimc`, `ucsm`, `ucsc`, `imm_domain`, `intersight`), `is_system`, `system_usage`, `is_hidden`, `is_reachable`.
 - Catalog Devices are those with `is_system == true` (observed with `system_usage == "catalog"` and names like `ucsm_catalog.easyucs`); they are always excluded.
-- Fetch: `POST /devices/{device_uuid}/actions/fetch_config_and_inventory` with body `{"force": <bool>}` returns `{"task": <task_uuid>}`.
-- Task: `GET /tasks/{task_uuid}` returns `status` (`in_progress`, `successful`, `failed`, `skipped`), `progress`, `status_message`, timestamps. `successful` is the only success; `failed` and `skipped` are failures carrying `status_message`.
-- The task payload does not reference the created Config/Inventory. After a successful Fetch, the most recent Config and Inventory are located by listing `GET /devices/{uuid}/configs` and `GET /devices/{uuid}/inventories` ordered by timestamp descending (the API supports `order_by_attribute`, `order_by_direction`, `page_size`). The same lookup serves the skip-Fetch mode.
-- Download: `GET /devices/{uuid}/configs/{config_uuid}/actions/download` and `GET /devices/{uuid}/inventories/{inventory_uuid}/actions/download` return the file content, saved as-is.
+- Fetch: `POST /devices/{device_uuid}/configs/actions/fetch`, then `POST /devices/{device_uuid}/inventories/actions/fetch`, each with body `{"force": <bool>}` and returning `{"task": <task_uuid>}`. The combined `POST /devices/{device_uuid}/actions/fetch_config_and_inventory` is not used: EasyUCS 1.0.6 refuses it for Intersight with HTTP 500 `"Unsupported device type"`. EasyUCS runs one task per Device at a time; a second task waits as `pending`.
+- Task: `GET /tasks/{task_uuid}` returns `{"task": {...}}` (the published spec omits this wrapper) with `status` (`pending`, `in_progress`, `successful`, `failed`, `skipped`), `progress`, `status_message`, timestamps. `pending` and `in_progress` are unfinished; `successful` is the only success; anything else is a failure carrying `status_message`.
+- The task payload does not reference the created Config/Inventory. After a successful Fetch, the most recent Config and Inventory are located by listing `GET /devices/{uuid}/configs` and `GET /devices/{uuid}/inventories` ordered by timestamp descending (`order_by_attribute=timestamp`, `order_by_direction=desc`, `page_size=1`). Listed items are identified by `uuid`. The same lookup serves the skip-Fetch mode.
+- Download: `GET /devices/{uuid}/configs/{uuid}/actions/download` and `GET /devices/{uuid}/inventories/{uuid}/actions/download` return the file content (JSON), saved as-is.
+- Errors come back as JSON `{"message": "..."}`; that message is surfaced to the operator.
+- On the maintainer's lab, one Intersight Device takes about 3 minutes per Fetch (Config, then Inventory).
 - EasyUCS currently declares no security scheme.
 
 ### CLI contract of `eucs extract`

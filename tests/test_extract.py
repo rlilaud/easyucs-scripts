@@ -4,7 +4,7 @@ import re
 import socket
 from pathlib import Path
 
-from conftest import RunEucs
+from conftest import RunExtract
 from fake_easyucs import FakeEasyUCS
 
 
@@ -15,7 +15,7 @@ def only_child(folder: Path) -> Path:
 
 
 def test_extracts_a_fresh_config_and_inventory_for_every_real_device(
-    run_eucs: RunEucs, fake_easyucs: FakeEasyUCS, tmp_path: Path
+    run_extract: RunExtract, fake_easyucs: FakeEasyUCS, tmp_path: Path
 ) -> None:
     fi_a = fake_easyucs.add_device("fi-a", "ucsm")
     cimc = fake_easyucs.add_device("rack-01", "cimc")
@@ -23,24 +23,24 @@ def test_extracts_a_fresh_config_and_inventory_for_every_real_device(
     fake_easyucs.add_device("ucsm_catalog.easyucs", "ucsm", is_system=True)
     fake_easyucs.add_device("cimc_catalog.easyucs", "cimc", is_system=True)
 
-    result = run_eucs("extract", "--url", fake_easyucs.url, "--output", str(tmp_path))
+    result = run_extract(fake_easyucs.url, tmp_path)
 
     assert result.exit_code == 0, result.output
     instance_folder = only_child(only_child(tmp_path))
     assert sorted(p.name for p in instance_folder.iterdir()) == ["central", "fi-a", "rack-01"]
     for device in (fi_a, cimc, central):
-        assert device.fetch_count == 1
+        assert (device.configs_fetched, device.inventories_fetched) == (1, 1)
         device_folder = instance_folder / device.name
         assert (device_folder / "config.json").read_bytes() == device.latest_config
         assert (device_folder / "inventory.json").read_bytes() == device.latest_inventory
 
 
 def test_output_is_laid_out_as_run_timestamp_then_instance_then_device(
-    run_eucs: RunEucs, fake_easyucs: FakeEasyUCS, tmp_path: Path
+    run_extract: RunExtract, fake_easyucs: FakeEasyUCS, tmp_path: Path
 ) -> None:
     fake_easyucs.add_device("fi-a", "ucsm")
 
-    result = run_eucs("extract", "--url", fake_easyucs.url, "--output", str(tmp_path))
+    result = run_extract(fake_easyucs.url, tmp_path)
 
     assert result.exit_code == 0, result.output
     run_folder = only_child(tmp_path)
@@ -53,24 +53,24 @@ def test_output_is_laid_out_as_run_timestamp_then_instance_then_device(
 
 
 def test_instance_root_url_may_end_with_a_slash(
-    run_eucs: RunEucs, fake_easyucs: FakeEasyUCS, tmp_path: Path
+    run_extract: RunExtract, fake_easyucs: FakeEasyUCS, tmp_path: Path
 ) -> None:
     fake_easyucs.add_device("fi-a", "ucsm")
 
-    result = run_eucs("extract", "--url", fake_easyucs.url + "/", "--output", str(tmp_path))
+    result = run_extract(fake_easyucs.url + "/", tmp_path)
 
     assert result.exit_code == 0, result.output
     assert (only_child(only_child(tmp_path)) / "fi-a" / "config.json").is_file()
 
 
 def test_device_names_are_made_safe_for_windows_file_names(
-    run_eucs: RunEucs, fake_easyucs: FakeEasyUCS, tmp_path: Path
+    run_extract: RunExtract, fake_easyucs: FakeEasyUCS, tmp_path: Path
 ) -> None:
     fake_easyucs.add_device("UCS:A/B*?", "ucsm")
     fake_easyucs.add_device("CON", "cimc")
     fake_easyucs.add_device("lab central.", "ucsc")
 
-    result = run_eucs("extract", "--url", fake_easyucs.url, "--output", str(tmp_path))
+    result = run_extract(fake_easyucs.url, tmp_path)
 
     assert result.exit_code == 0, result.output
     instance_folder = only_child(only_child(tmp_path))
@@ -81,12 +81,12 @@ def test_device_names_are_made_safe_for_windows_file_names(
 
 
 def test_devices_whose_safe_names_clash_get_distinct_folders(
-    run_eucs: RunEucs, fake_easyucs: FakeEasyUCS, tmp_path: Path
+    run_extract: RunExtract, fake_easyucs: FakeEasyUCS, tmp_path: Path
 ) -> None:
     colon = fake_easyucs.add_device("fi:a", "ucsm")
     slash = fake_easyucs.add_device("fi/a", "ucsm")
 
-    result = run_eucs("extract", "--url", fake_easyucs.url, "--output", str(tmp_path))
+    result = run_extract(fake_easyucs.url, tmp_path)
 
     assert result.exit_code == 0, result.output
     instance_folder = only_child(only_child(tmp_path))
@@ -95,13 +95,13 @@ def test_devices_whose_safe_names_clash_get_distinct_folders(
 
 
 def test_two_consecutive_runs_create_two_run_folders_without_overwriting(
-    run_eucs: RunEucs, fake_easyucs: FakeEasyUCS, tmp_path: Path
+    run_extract: RunExtract, fake_easyucs: FakeEasyUCS, tmp_path: Path
 ) -> None:
     device = fake_easyucs.add_device("fi-a", "ucsm")
 
-    first = run_eucs("extract", "--url", fake_easyucs.url, "--output", str(tmp_path))
+    first = run_extract(fake_easyucs.url, tmp_path)
     first_config = device.latest_config
-    second = run_eucs("extract", "--url", fake_easyucs.url, "--output", str(tmp_path))
+    second = run_extract(fake_easyucs.url, tmp_path)
 
     assert first.exit_code == 0, first.output
     assert second.exit_code == 0, second.output
@@ -112,12 +112,23 @@ def test_two_consecutive_runs_create_two_run_folders_without_overwriting(
     assert first_config != device.latest_config
 
 
-def test_an_unreachable_instance_fails_cleanly_with_a_non_zero_exit_code(run_eucs: RunEucs, tmp_path: Path) -> None:
+def test_a_fetch_refused_by_easyucs_fails_with_easyucs_message(
+    run_extract: RunExtract, fake_easyucs: FakeEasyUCS, tmp_path: Path
+) -> None:
+    fake_easyucs.add_device("LabDC-Paris", "intersight", fetch_error="Unsupported device type")
+
+    result = run_extract(fake_easyucs.url, tmp_path)
+
+    assert result.exit_code == 1
+    assert "Unsupported device type" in result.output
+
+
+def test_an_unreachable_instance_fails_cleanly_with_a_non_zero_exit_code(run_extract: RunExtract, tmp_path: Path) -> None:
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         closed_port = probe.getsockname()[1]
 
-    result = run_eucs("extract", "--url", f"http://127.0.0.1:{closed_port}", "--output", str(tmp_path))
+    result = run_extract(f"http://127.0.0.1:{closed_port}", tmp_path)
 
     assert result.exit_code == 1
     assert f"Error: GET http://127.0.0.1:{closed_port}/api/v1/devices failed" in result.output

@@ -17,13 +17,13 @@ class DeviceExtracted:
     folder: Path
 
 
-def extract_instance(instance: Instance, run: RunFolder) -> Iterator[DeviceExtracted]:
+def extract_instance(instance: Instance, run: RunFolder, *, poll_interval: float) -> Iterator[DeviceExtracted]:
     """Fetch and save the Config and Inventory of every real Device of `instance`, one by one."""
     client = EasyUCSClient(instance.url)
     for device in client.list_devices():
         if device.is_catalog:
             continue
-        client.fetch(device)
+        client.fetch(device, poll_interval=poll_interval)
         config = client.download_latest_config(device)
         inventory = client.download_latest_inventory(device)
         folder = run.save_device(instance.name, device.name, config, inventory)

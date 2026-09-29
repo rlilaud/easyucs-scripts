@@ -31,6 +31,7 @@ def extract(
             show_default=False,
         ),
     ] = Path("extractions"),
+    poll_interval: Annotated[float, typer.Option("--poll-interval", hidden=True)] = 2.0,
 ) -> None:
     """Fetch and save the Config and Inventory of every Device of an EasyUCS Instance."""
     try:
@@ -41,7 +42,7 @@ def extract(
     run = RunFolder.create(output)
     console.print(f"Run folder: {escape(str(run.path))}")
     try:
-        for result in extract_instance(instance, run):
+        for result in extract_instance(instance, run, poll_interval=poll_interval):
             console.print(
                 f"[green]OK[/green] {escape(instance.name)} / {escape(result.device.name)}"
                 f" ({escape(result.device.type)}) saved to {escape(str(result.folder))}"
