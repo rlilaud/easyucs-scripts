@@ -14,8 +14,11 @@ class Instance:
 
 def instance_from_url(url: str) -> Instance:
     """Build an Instance named after the URL's host and port (e.g. `10.0.0.5_5010`)."""
-    invalid_url_error = ValueError(f"{url!r} is not a valid Instance URL; expected http(s)://<host>[:<port>]")
     parts = urlsplit(url)
+    if parts.username is not None or parts.password is not None:
+        # The URL is not echoed back: it holds a secret.
+        raise ValueError("Instance URLs must not contain credentials (user:password@host)")
+    invalid_url_error = ValueError(f"{url!r} is not a valid Instance URL; expected http(s)://<host>[:<port>]")
     try:
         port = parts.port
     except ValueError:

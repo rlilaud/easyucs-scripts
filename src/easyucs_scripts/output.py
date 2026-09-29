@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Mapping
 
 RUN_TIMESTAMP_FORMAT = "%Y-%m-%d_%H-%M-%S"
+CONFIG_FILENAME = "config.json"
+INVENTORY_FILENAME = "inventory.json"
+SUMMARY_FILENAME = "summary.json"
 
 _WINDOWS_INVALID_CHARACTERS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _WINDOWS_RESERVED_NAMES = {
@@ -44,9 +49,18 @@ class RunFolder:
         instance_folder = self.path / safe_filename(instance_name)
         instance_folder.mkdir(exist_ok=True)
         device_folder = _new_folder(instance_folder, safe_filename(device_name))
-        (device_folder / "config.json").write_bytes(config)
-        (device_folder / "inventory.json").write_bytes(inventory)
+        (device_folder / CONFIG_FILENAME).write_bytes(config)
+        (device_folder / INVENTORY_FILENAME).write_bytes(inventory)
         return device_folder
+
+    def write_summary(self, summary: Mapping[str, Any]) -> Path:
+        path = self.path / SUMMARY_FILENAME
+        path.write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        return path
+
+    def relative_path(self, path: Path) -> str:
+        """`path` relative to the run folder, with `/` separators on every OS."""
+        return path.relative_to(self.path).as_posix()
 
 
 def _new_folder(parent: Path, name: str) -> Path:

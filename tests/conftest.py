@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable, Iterator
+from typing import Callable, Iterator, Optional
 
 import pytest
 from fake_easyucs import FakeEasyUCS
@@ -20,10 +20,13 @@ def fake_easyucs() -> Iterator[FakeEasyUCS]:
 
 @pytest.fixture
 def run_eucs() -> RunEucs:
-    """Invoke the real `eucs` command in-process with the given arguments."""
+    """Invoke the real `eucs` command in-process with the given arguments, as plain text wide
+    enough that Rich tables don't wrap."""
 
     def run(*args: str) -> Result:
-        return CliRunner().invoke(app, list(args))
+        # Any FORCE_COLOR value, even "0", makes Rich style its output as for a terminal.
+        env: dict[str, Optional[str]] = {"COLUMNS": "250", "FORCE_COLOR": None, "TTY_COMPATIBLE": None}
+        return CliRunner(env=env).invoke(app, list(args))
 
     return run
 
