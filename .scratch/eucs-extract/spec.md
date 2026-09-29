@@ -103,7 +103,7 @@ All user-facing text (help, errors, documentation) is in English.
 57. As the maintainer, I want releases (all artifacts plus checksums) to be built and published automatically when I push a version tag, so that releasing is one step.
 58. As the maintainer, I want new features to be added as new subcommands that reuse a shared EasyUCS client, so that adding a feature doesn't require touching existing ones.
 59. As the maintainer, I want all HTTP interaction with an Instance to go through one client, so that adding authentication later happens in one place.
-60. As the maintainer, I want automated tests that run in CI on every push without any real EasyUCS, so that regressions are caught early.
+60. As the maintainer, I want automated tests that run in CI on every pull request without any real EasyUCS, so that regressions are caught early.
 61. As the maintainer, I want an optional integration test that runs against a real Instance when I provide its URL, so that I can check the tool against the real API.
 62. As a future contributor, I want the README to explain why only pure-Python dependencies are allowed, so that I don't break the standalone and zipapp distributions by adding a compiled dependency.
 
