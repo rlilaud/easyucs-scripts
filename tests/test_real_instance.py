@@ -22,7 +22,7 @@ def test_extracts_every_real_device_of_a_real_instance(run_eucs: RunEucs, tmp_pa
 
     assert result.exit_code == 0, result.output
     (run_folder,) = tmp_path.iterdir()
-    (instance_folder,) = run_folder.iterdir()
+    (instance_folder,) = [p for p in run_folder.iterdir() if p.is_dir()]
     device_folders = list(instance_folder.iterdir())
     assert device_folders, "the Instance has no real Device to extract"
     for device_folder in device_folders:

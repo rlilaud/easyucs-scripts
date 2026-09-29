@@ -2,8 +2,10 @@
 
 Tests build a scenario by adding Devices, point `eucs` at `FakeEasyUCS.url`, and inspect
 the Devices afterwards. Every Device starts with one stored Config and Inventory. A Fetch
-task reports `pending`, then `in_progress`, and stores a new, distinguishable artifact only
-when it reports `successful`, so tests can tell fresh artifacts from stale ones.
+task reports `pending`, then `in_progress`, then the Device's `task_outcome`; it stores a
+new, distinguishable artifact only when it reports `successful`, so tests can tell fresh
+artifacts from stale ones. Setting `FakeEasyUCS.error` makes every request fail, and
+`FakeEasyUCS.devices_response` replaces the body of the Device listing.
 
 The behaviour mirrors a real EasyUCS 1.0.6 where it differs from its published OpenAPI spec:
 tasks are wrapped in `{"task": ...}`, listed artifacts are identified by `uuid`, and task
@@ -26,7 +28,7 @@ from urllib.parse import parse_qs, urlsplit
 
 API_PREFIX = "/api/v1"
 _EPOCH = datetime(2026, 1, 1, tzinfo=timezone.utc)
-_TASK_STATUSES_BEFORE_SUCCESS = ("pending", "in_progress")
+_TASK_STATUSES_BEFORE_OUTCOME = ("pending", "in_progress")
 
 
 @dataclass
@@ -42,6 +44,8 @@ class FakeDevice:
     device_type: str
     is_system: bool
     fetch_error: Optional[str]
+    task_outcome: str
+    task_message: Optional[str]
     uuid: str = field(default_factory=lambda: str(uuid.uuid4()))
     configs: list[StoredArtifact] = field(default_factory=list)
     inventories: list[StoredArtifact] = field(default_factory=list)
@@ -73,6 +77,8 @@ class _FetchTask:
 class FakeEasyUCS:
     def __init__(self) -> None:
         self.devices: list[FakeDevice] = []
+        self.error: Optional[tuple[int, str]] = None
+        self.devices_response: Optional[Any] = None
         self._tasks: dict[str, _FetchTask] = {}
         self._clock = itertools.count(1)
         self._lock = threading.Lock()
@@ -108,9 +114,22 @@ class FakeEasyUCS:
         *,
         is_system: bool = False,
         fetch_error: Optional[str] = None,
+        task_outcome: str = "successful",
+        task_message: Optional[str] = None,
     ) -> FakeDevice:
-        """Add a Device. With `fetch_error`, EasyUCS refuses its Fetches with HTTP 500 and that message."""
-        device = FakeDevice(name=name, device_type=device_type, is_system=is_system, fetch_error=fetch_error)
+        """Add a Device.
+
+        With `fetch_error`, EasyUCS refuses its Fetches with HTTP 500 and that message. Its Fetch
+        tasks end with status `task_outcome` and `task_message`; `in_progress` never ends.
+        """
+        device = FakeDevice(
+            name=name,
+            device_type=device_type,
+            is_system=is_system,
+            fetch_error=fetch_error,
+            task_outcome=task_outcome,
+            task_message=task_message,
+        )
         self._store_artifact(device, "configs")
         self._store_artifact(device, "inventories")
         self.devices.append(device)
@@ -126,11 +145,15 @@ class FakeEasyUCS:
 
     def handle(self, method: str, path: str, query: dict[str, list[str]]) -> tuple[int, Any]:
         with self._lock:
+            if self.error is not None:
+                return self.error[0], {"message": self.error[1]}
             if not path.startswith(API_PREFIX + "/"):
                 return 404, {"message": "Not found"}
             path = path[len(API_PREFIX) :]
 
             if method == "GET" and path == "/devices":
+                if self.devices_response is not None:
+                    return 200, self.devices_response
                 return 200, {"devices": [_device_payload(d) for d in self.devices]}
 
             match = re.fullmatch(r"/devices/([^/]+)/(configs|inventories)/actions/fetch", path)
@@ -178,11 +201,17 @@ class FakeEasyUCS:
         task = self._tasks[task_uuid]
         task.polls += 1
         payload = {"uuid": task_uuid, "device_uuid": task.device.uuid, "device_name": task.device.name}
-        if task.polls <= len(_TASK_STATUSES_BEFORE_SUCCESS):
-            return {**payload, "status": _TASK_STATUSES_BEFORE_SUCCESS[task.polls - 1], "progress": 50}
-        if task.polls == len(_TASK_STATUSES_BEFORE_SUCCESS) + 1:
-            self._store_artifact(task.device, task.collection)
-        return {**payload, "status": "successful", "progress": 100, "status_message": "Successfully completed task"}
+        if task.polls <= len(_TASK_STATUSES_BEFORE_OUTCOME):
+            return {**payload, "status": _TASK_STATUSES_BEFORE_OUTCOME[task.polls - 1], "progress": 50}
+        outcome = task.device.task_outcome
+        if outcome == "in_progress":
+            return {**payload, "status": "in_progress", "progress": 50}
+        if outcome == "successful":
+            if task.polls == len(_TASK_STATUSES_BEFORE_OUTCOME) + 1:
+                self._store_artifact(task.device, task.collection)
+            message = task.device.task_message or "Successfully completed task"
+            return {**payload, "status": "successful", "progress": 100, "status_message": message}
+        return {**payload, "status": outcome, "progress": 100, "status_message": task.device.task_message}
 
 
 def _device_payload(device: FakeDevice) -> dict[str, Any]:
