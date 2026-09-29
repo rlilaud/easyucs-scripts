@@ -1,0 +1,14 @@
+# 10: Release publishing and user documentation
+
+**What to build:** Pushing a `vX.Y.Z` tag publishes a GitHub Release carrying all artifacts and a SHA-256 checksums file, and the README tells an operator, in English, everything needed to install and use the tool in an air-gapped environment.
+
+See the parent spec: `.scratch/eucs-extract/spec.md`.
+
+**Blocked by:** 02, 03, 04, 05, 06, 07, 08, 09
+
+**Status:** ready-for-agent
+
+- [ ] Pushing a `vX.Y.Z` tag builds all artifacts (reusing 09) and publishes them to a GitHub Release with a SHA-256 checksums file.
+- [ ] The released version matches the tag and is what `eucs --version` prints.
+- [ ] README (English) covers: what the tool does (using the `GLOSSARY.md` vocabulary), air-gap installation for each artifact including checksum verification, supported OS and minimum Python, `eucs extract` usage and every option, Instances file format with examples (including the reserved `auth` block and `password_env`, and why plain passwords are refused), output layout, exit codes, TLS options and how to check a `ca_bundle` with `openssl x509 -text -noout -in <file>` (not expired, RSA ≥ 2048 or P-256+, SHA-2 signature), and how to run the unsigned macOS executable past Gatekeeper.
+- [ ] README ends with a section explaining why only pure-Python dependencies are allowed (standalone executables and universal zipapp) and that PyYAML is used without its compiled extension.
