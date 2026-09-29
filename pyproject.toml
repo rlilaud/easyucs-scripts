@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "easyucs-scripts"
+dynamic = ["version"]
+description = "Command-line tools for EasyUCS Instances"
+requires-python = ">=3.9"
+dependencies = [
+    "typer>=0.9",
+    "rich>=13",
+    "requests>=2.28",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7",
+    "mypy>=1.0",
+    "types-requests",
+]
+
+[project.scripts]
+eucs = "easyucs_scripts.cli:app"
+
+[tool.setuptools.dynamic]
+version = { attr = "easyucs_scripts.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+files = ["src", "tests"]
+strict = true
