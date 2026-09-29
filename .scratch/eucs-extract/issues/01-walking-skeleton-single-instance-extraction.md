@@ -20,3 +20,13 @@ See the parent spec: `.scratch/eucs-extract/spec.md` (API contract, output layou
 - [x] Tests cover: happy path with several Devices including Catalog Devices, output layout, name sanitisation, two runs not colliding.
 - [x] An optional integration test runs the CLI against a real Instance when `EUCS_TEST_URL` is set, and is skipped otherwise.
 - [x] CI runs the test suite on every push on Windows, Linux and macOS.
+
+## Comments
+
+Implemented on branch `01-walking-skeleton`. Notes for the next tickets:
+
+- The CI workflow (`.github/workflows/tests.yml`, Python 3.9 and 3.13) has not run on GitHub yet; Python 3.9 was not available locally.
+- The fake EasyUCS completes every Fetch task immediately, so the `in_progress` polling loop is not exercised yet. Ticket 02 (hidden polling interval, `failed`/`skipped`/timeout scenarios) should make task status scenario-configurable.
+- The Config/Inventory listing shape (`{"configs": [{"config_uuid", "timestamp"}]}`, `{"inventories": [{"inventory_uuid", ...}]}`) and query parameters are assumed; confirm with `EUCS_TEST_URL` against a real Instance.
+- Unexpected response shapes (`KeyError`) and disk errors still end in a traceback; ticket 02 owns failure handling.
+- Device names that sanitise to the same folder name get `_2`, `_3`... suffixes.

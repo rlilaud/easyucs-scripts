@@ -37,22 +37,27 @@ class RunFolder:
 
     @classmethod
     def create(cls, output_dir: Path) -> RunFolder:
-        stamp = datetime.now().strftime(RUN_TIMESTAMP_FORMAT)
         output_dir.mkdir(parents=True, exist_ok=True)
-        candidate = output_dir / stamp
-        attempt = 1
-        while True:
-            try:
-                candidate.mkdir()
-            except FileExistsError:
-                attempt += 1
-                candidate = output_dir / f"{stamp}_{attempt}"
-            else:
-                return cls(candidate)
+        return cls(_new_folder(output_dir, datetime.now().strftime(RUN_TIMESTAMP_FORMAT)))
 
     def save_device(self, instance_name: str, device_name: str, config: bytes, inventory: bytes) -> Path:
-        device_folder = self.path / safe_filename(instance_name) / safe_filename(device_name)
-        device_folder.mkdir(parents=True, exist_ok=True)
+        instance_folder = self.path / safe_filename(instance_name)
+        instance_folder.mkdir(exist_ok=True)
+        device_folder = _new_folder(instance_folder, safe_filename(device_name))
         (device_folder / "config.json").write_bytes(config)
         (device_folder / "inventory.json").write_bytes(inventory)
         return device_folder
+
+
+def _new_folder(parent: Path, name: str) -> Path:
+    """Create `parent/name`, or `parent/name_2`, `name_3`... if taken (case-insensitively on Windows)."""
+    candidate = parent / name
+    attempt = 1
+    while True:
+        try:
+            candidate.mkdir()
+        except FileExistsError:
+            attempt += 1
+            candidate = parent / f"{name}_{attempt}"
+        else:
+            return candidate

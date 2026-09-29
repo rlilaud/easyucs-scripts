@@ -80,6 +80,20 @@ def test_device_names_are_made_safe_for_windows_file_names(
         assert (device_folder / "inventory.json").is_file()
 
 
+def test_devices_whose_safe_names_clash_get_distinct_folders(
+    run_eucs: RunEucs, fake_easyucs: FakeEasyUCS, tmp_path: Path
+) -> None:
+    colon = fake_easyucs.add_device("fi:a", "ucsm")
+    slash = fake_easyucs.add_device("fi/a", "ucsm")
+
+    result = run_eucs("extract", "--url", fake_easyucs.url, "--output", str(tmp_path))
+
+    assert result.exit_code == 0, result.output
+    instance_folder = only_child(only_child(tmp_path))
+    saved = sorted((instance_folder / name / "config.json").read_bytes() for name in ("fi_a", "fi_a_2"))
+    assert saved == sorted([colon.latest_config, slash.latest_config])
+
+
 def test_two_consecutive_runs_create_two_run_folders_without_overwriting(
     run_eucs: RunEucs, fake_easyucs: FakeEasyUCS, tmp_path: Path
 ) -> None:
@@ -106,4 +120,4 @@ def test_an_unreachable_instance_fails_cleanly_with_a_non_zero_exit_code(run_euc
     result = run_eucs("extract", "--url", f"http://127.0.0.1:{closed_port}", "--output", str(tmp_path))
 
     assert result.exit_code == 1
-    assert isinstance(result.exception, SystemExit), "expected an error message, not a traceback"
+    assert f"Error: GET http://127.0.0.1:{closed_port}/api/v1/devices failed" in result.output

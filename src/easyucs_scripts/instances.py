@@ -14,13 +14,13 @@ class Instance:
 
 def instance_from_url(url: str) -> Instance:
     """Build an Instance named after the URL's host and port (e.g. `10.0.0.5_5010`)."""
-    invalid = ValueError(f"{url!r} is not a valid Instance URL; expected http(s)://<host>[:<port>]")
+    invalid_url_error = ValueError(f"{url!r} is not a valid Instance URL; expected http(s)://<host>[:<port>]")
     parts = urlsplit(url)
     try:
         port = parts.port
     except ValueError:
-        raise invalid from None
+        raise invalid_url_error from None
     if parts.scheme not in ("http", "https") or not parts.hostname:
-        raise invalid
+        raise invalid_url_error
     name = parts.hostname if port is None else f"{parts.hostname}_{port}"
     return Instance(url=url, name=name)

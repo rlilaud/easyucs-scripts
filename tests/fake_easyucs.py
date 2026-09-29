@@ -116,13 +116,13 @@ class FakeEasyUCS:
                 device = self._device(match.group(1))
                 if device is None:
                     return 404, {"message": "Device not found"}
-                return 200, _listing(match.group(2), _store(device, match.group(2)), query)
+                return 200, _listing(match.group(2), _artifacts(device, match.group(2)), query)
 
             match = re.fullmatch(r"/devices/([^/]+)/(configs|inventories)/([^/]+)/actions/download", path)
             if method == "GET" and match:
                 device = self._device(match.group(1))
                 if device is not None:
-                    for artifact in _store(device, match.group(2)):
+                    for artifact in _artifacts(device, match.group(2)):
                         if artifact.uuid == match.group(3):
                             return 200, artifact.content
                 return 404, {"message": "Not found"}
@@ -157,7 +157,7 @@ def _device_payload(device: FakeDevice) -> dict[str, Any]:
     }
 
 
-def _store(device: FakeDevice, collection: str) -> list[StoredArtifact]:
+def _artifacts(device: FakeDevice, collection: str) -> list[StoredArtifact]:
     return device.configs if collection == "configs" else device.inventories
 
 
