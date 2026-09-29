@@ -9,7 +9,7 @@ from rich.markup import escape
 from rich.table import Table
 
 from easyucs_scripts.durations import parse_duration
-from easyucs_scripts.extraction import InstanceFailed, Result, all_succeeded, build_summary, extract_instance
+from easyucs_scripts.extraction import InstanceFailed, Result, all_succeeded, extract_instance
 from easyucs_scripts.instances import instance_from_url
 from easyucs_scripts.output import RunFolder
 
@@ -60,7 +60,7 @@ def extract(
         _print_result(result)
 
     parameters = {"urls": [instance.url], "output": str(output), "timeout_seconds": timeout_seconds}
-    summary_path = run.write_summary(build_summary(parameters, [instance], results, run))
+    summary_path = run.write_summary(parameters, [instance], results)
     console.print(_summary_table(results))
     console.print(f"Summary: {escape(str(summary_path))}")
     if not all_succeeded(results):

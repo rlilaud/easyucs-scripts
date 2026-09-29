@@ -237,6 +237,8 @@ def test_a_run_where_every_device_succeeds_exits_zero_with_a_successful_summary(
     summary = read_summary(tmp_path)
     assert summary["succeeded"] is True
     assert [d["outcome"] for d in summary["devices"]] == ["succeeded", "succeeded"]
+    table = result.output[result.output.index("Instance") :]
+    assert re.search(r"rack-01.*cimc.*succeeded", table)
 
 
 def test_a_summary_table_lists_every_device_at_the_end_of_the_run(
@@ -247,6 +249,7 @@ def test_a_summary_table_lists_every_device_at_the_end_of_the_run(
 
     result = run_extract(fake_easyucs.url, tmp_path)
 
+    assert result.exit_code == 1
     table = result.output[result.output.index("Instance") :]
     assert re.search(r"Instance.*Device.*Type.*Outcome.*Reason", table)
     assert re.search(r"fi-a.*ucsm.*succeeded", table)

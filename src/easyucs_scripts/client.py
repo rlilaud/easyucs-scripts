@@ -116,12 +116,12 @@ class EasyUCSClient:
 
 
 @contextmanager
-def _expected_shape(request: str) -> Iterator[None]:
+def _expected_shape(endpoint: str) -> Iterator[None]:
     """Turn a response that lacks the expected fields into an EasyUCSError."""
     try:
         yield
     except (KeyError, IndexError, TypeError, AttributeError) as exc:
-        raise EasyUCSError(f"{request} returned an unexpected response ({type(exc).__name__}: {exc})") from exc
+        raise EasyUCSError(f"{endpoint} returned an unexpected response ({type(exc).__name__}: {exc})") from exc
 
 
 def _error_message(response: requests.Response) -> str:
