@@ -24,8 +24,14 @@ def run_eucs() -> RunEucs:
     enough that Rich tables don't wrap."""
 
     def run(*args: str) -> Result:
-        # Any FORCE_COLOR value, even "0", makes Rich style its output as for a terminal.
-        env: dict[str, Optional[str]] = {"COLUMNS": "250", "FORCE_COLOR": None, "TTY_COMPATIBLE": None}
+        # Any FORCE_COLOR value, even "0", makes Rich style its output as for a terminal, and
+        # Typer's help does the same under GITHUB_ACTIONS unless _TYPER_FORCE_DISABLE_TERMINAL is set.
+        env: dict[str, Optional[str]] = {
+            "COLUMNS": "250",
+            "FORCE_COLOR": None,
+            "TTY_COMPATIBLE": None,
+            "_TYPER_FORCE_DISABLE_TERMINAL": "1",
+        }
         return CliRunner(env=env).invoke(app, list(args))
 
     return run
