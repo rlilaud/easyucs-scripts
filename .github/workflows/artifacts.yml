@@ -1,0 +1,114 @@
+name: Artifacts
+
+on:
+  push:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  executable:
+    name: Executable (${{ matrix.artifact }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: eucs-windows-x86_64
+            executable: dist/eucs.exe
+          - os: macos-latest
+            artifact: eucs-macos-arm64
+            executable: dist/eucs
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install
+        run: python -m pip install . pyinstaller
+      - name: Build
+        run: python scripts/build_executable.py
+      - name: Smoke test
+        run: python scripts/smoke_test.py ${{ matrix.executable }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.executable }}
+          if-no-files-found: error
+
+  # Built on AlmaLinux 8 (glibc 2.28) so that the executable runs on RHEL 8+, its rebuilds,
+  # Ubuntu 22.04+ and SLES 15 SP4+.
+  linux-executable:
+    name: Executable (eucs-linux-x86_64)
+    runs-on: ubuntu-latest
+    container: almalinux:8
+    steps:
+      - name: Install Python
+        run: dnf install -y python3.12 python3.12-pip binutils
+      - uses: actions/checkout@v4
+      - name: Install
+        run: python3.12 -m pip install . pyinstaller
+      - name: Build
+        run: python3.12 scripts/build_executable.py
+      - name: Smoke test
+        run: python3.12 scripts/smoke_test.py dist/eucs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: eucs-linux-x86_64
+          path: dist/eucs
+          if-no-files-found: error
+
+  zipapp:
+    name: Zipapp
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        id: oldest
+        with:
+          python-version: "3.9"
+      - uses: actions/setup-python@v5
+        id: recent
+        with:
+          python-version: "3.13"
+      - name: Build
+        run: python scripts/build_zipapp.py
+      - name: Smoke test with Python 3.9
+        run: ${{ steps.oldest.outputs.python-path }} scripts/smoke_test.py ${{ steps.oldest.outputs.python-path }} dist/eucs.pyz
+      - name: Smoke test with Python 3.13
+        run: ${{ steps.recent.outputs.python-path }} scripts/smoke_test.py ${{ steps.recent.outputs.python-path }} dist/eucs.pyz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: eucs-zipapp
+          path: dist/eucs.pyz
+          if-no-files-found: error
+
+  zipapp-on-other-os:
+    name: Zipapp on ${{ matrix.os }}
+    needs: zipapp
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        id: oldest
+        with:
+          python-version: "3.9"
+      - uses: actions/setup-python@v5
+        id: recent
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@v4
+        with:
+          name: eucs-zipapp
+          path: dist
+      - name: Smoke test with Python 3.9
+        run: ${{ steps.oldest.outputs.python-path }} scripts/smoke_test.py ${{ steps.oldest.outputs.python-path }} dist/eucs.pyz
+      - name: Smoke test with Python 3.13
+        run: ${{ steps.recent.outputs.python-path }} scripts/smoke_test.py ${{ steps.recent.outputs.python-path }} dist/eucs.pyz
