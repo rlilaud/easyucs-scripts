@@ -40,6 +40,23 @@ def extract(
             show_default=False,
         ),
     ] = "30m",
+    no_fetch: Annotated[
+        bool,
+        typer.Option(
+            "--no-fetch",
+            help="Skip the Fetch and save the most recent Config and Inventory already stored in EasyUCS.",
+        ),
+    ] = False,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help=(
+                "Ask EasyUCS to carry on the Fetch past failed SDK objects or Intersight license"
+                " validation. The saved Config may then be incomplete."
+            ),
+        ),
+    ] = False,
     poll_interval: Annotated[float, typer.Option("--poll-interval", hidden=True)] = 2.0,
 ) -> None:
     """Fetch and save the Config and Inventory of every Device of an EasyUCS Instance."""
@@ -55,11 +72,19 @@ def extract(
     run = RunFolder.create(output)
     console.print(f"Run folder: {escape(str(run.path))}")
     results: list[Result] = []
-    for result in extract_instance(instance, run, poll_interval=poll_interval, timeout=timeout_seconds):
+    for result in extract_instance(
+        instance, run, fetch=not no_fetch, force=force, poll_interval=poll_interval, timeout=timeout_seconds
+    ):
         results.append(result)
         _print_result(result)
 
-    parameters = {"urls": [instance.url], "output": str(output), "timeout_seconds": timeout_seconds}
+    parameters = {
+        "urls": [instance.url],
+        "output": str(output),
+        "no_fetch": no_fetch,
+        "force": force,
+        "timeout_seconds": timeout_seconds,
+    }
     summary_path = run.write_summary(parameters, [instance], results)
     console.print(_summary_table(results))
     console.print(f"Summary: {escape(str(summary_path))}")

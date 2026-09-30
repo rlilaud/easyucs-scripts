@@ -170,6 +170,69 @@ def test_a_fetch_task_still_running_after_the_timeout_fails_its_device_and_other
     assert (instance_folder / "rack-01" / "config.json").read_bytes() == rack.latest_config
 
 
+def test_no_fetch_saves_the_most_recent_stored_config_and_inventory_without_fetching(
+    run_extract: RunExtract, fake_easyucs: FakeEasyUCS, tmp_path: Path
+) -> None:
+    device = fake_easyucs.add_device("fi-a", "ucsm")
+    run_extract(fake_easyucs.url, tmp_path / "earlier")
+    latest_config, latest_inventory = device.latest_config, device.latest_inventory
+
+    result = run_extract(fake_easyucs.url, tmp_path / "now", "--no-fetch")
+
+    assert result.exit_code == 0, result.output
+    assert (device.configs_fetched, device.inventories_fetched) == (1, 1)
+    device_folder = only_instance_folder(tmp_path / "now") / "fi-a"
+    assert (device_folder / "config.json").read_bytes() == latest_config
+    assert (device_folder / "inventory.json").read_bytes() == latest_inventory
+
+
+def test_no_fetch_fails_a_device_with_nothing_stored_and_hints_to_fetch(
+    run_extract: RunExtract, fake_easyucs: FakeEasyUCS, tmp_path: Path
+) -> None:
+    fake_easyucs.add_device("fi-a", "ucsm", stored_config=False)
+    fake_easyucs.add_device("rack-01", "cimc", stored_inventory=False)
+    central = fake_easyucs.add_device("central", "ucsc")
+
+    result = run_extract(fake_easyucs.url, tmp_path, "--no-fetch")
+
+    assert result.exit_code == 1
+    fi_a, rack, central_summary = read_summary(tmp_path)["devices"]
+    assert (fi_a["outcome"], rack["outcome"], central_summary["outcome"]) == ("failed", "failed", "succeeded")
+    assert "no stored Config" in fi_a["reason"]
+    assert "no stored Inventory" in rack["reason"]
+    for reason in (fi_a["reason"], rack["reason"]):
+        assert "without --no-fetch" in reason
+    instance_folder = only_instance_folder(tmp_path)
+    assert sorted(p.name for p in instance_folder.iterdir()) == ["central"]
+    assert (instance_folder / "central" / "config.json").read_bytes() == central.latest_config
+
+
+def test_fetches_are_not_forced_by_default(run_extract: RunExtract, fake_easyucs: FakeEasyUCS, tmp_path: Path) -> None:
+    device = fake_easyucs.add_device("fi-a", "ucsm")
+
+    result = run_extract(fake_easyucs.url, tmp_path)
+
+    assert result.exit_code == 0, result.output
+    assert device.fetch_forces == [False, False]
+
+
+def test_force_is_forwarded_to_every_fetch(run_extract: RunExtract, fake_easyucs: FakeEasyUCS, tmp_path: Path) -> None:
+    device = fake_easyucs.add_device("fi-a", "ucsm")
+
+    result = run_extract(fake_easyucs.url, tmp_path, "--force")
+
+    assert result.exit_code == 0, result.output
+    assert device.fetch_forces == [True, True]
+
+
+def test_help_warns_that_force_may_produce_an_incomplete_config(run_eucs: RunEucs) -> None:
+    result = run_eucs("extract", "--help")
+
+    assert result.exit_code == 0, result.output
+    assert "--force" in result.output
+    assert "incomplete" in result.output
+
+
 def test_help_documents_the_timeout_but_not_the_polling_interval(run_eucs: RunEucs) -> None:
     result = run_eucs("extract", "--help")
 
@@ -204,11 +267,17 @@ def test_summary_records_run_parameters_and_the_outcome_and_files_of_every_devic
     fake_easyucs.add_device("ucsm_catalog.easyucs", "ucsm", is_system=True)
     instance = f"127.0.0.1_{fake_easyucs.port}"
 
-    result = run_extract(fake_easyucs.url, tmp_path, "--timeout", "5m")
+    result = run_extract(fake_easyucs.url, tmp_path, "--timeout", "5m", "--force")
 
     assert result.exit_code == 1
     summary = read_summary(tmp_path)
-    assert summary["parameters"] == {"urls": [fake_easyucs.url], "output": str(tmp_path), "timeout_seconds": 300}
+    assert summary["parameters"] == {
+        "urls": [fake_easyucs.url],
+        "output": str(tmp_path),
+        "no_fetch": False,
+        "force": True,
+        "timeout_seconds": 300,
+    }
     assert summary["succeeded"] is False
     assert summary["instances"] == [{"name": instance, "url": fake_easyucs.url, "outcome": "succeeded", "reason": None}]
     fi_a, rack = summary["devices"]
