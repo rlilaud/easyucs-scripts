@@ -17,4 +17,4 @@ See the parent spec: `.scratch/eucs-extract/spec.md` (Distribution).
 
 ## Comments
 
-- 2026-09-30: to save GitHub Actions minutes on the free plan (private repo, macOS counts 10x), the Artifacts workflow runs on pull requests that touch the build (`src/`, `scripts/`, `tests/fake_easyucs.py`, `pyproject.toml`, the workflow), on `v*` tags and on demand, instead of on every push. Superseded runs are cancelled, CI artifacts are kept 7 days, and the Tests workflow runs macOS on Python 3.13 only.
+- 2026-09-30: to save GitHub Actions minutes on the free plan (private repo, macOS counts 10x), the Artifacts workflow runs on pull requests that touch the build (`src/`, `scripts/`, `tests/fake_easyucs.py`, `pyproject.toml`, the workflow), on `v*` tags and on demand, instead of on every push. Superseded runs are cancelled and CI artifacts are kept 7 days. macOS jobs (executable and zipapp smoke test) run only on release tags, since the maintainer has no Mac to test on; the Tests workflow no longer runs on macOS.

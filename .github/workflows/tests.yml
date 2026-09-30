@@ -16,16 +16,13 @@ jobs:
       fail-fast: false
       matrix:
         # Pinned: setup-python may not provide Python 3.9 on later Ubuntu releases.
-        os: [ubuntu-24.04, windows-latest, macos-latest]
+        # No macOS: its minutes count 10x, and the Artifacts workflow covers it on release tags.
+        os: [ubuntu-24.04, windows-latest]
         python-version: ["3.9", "3.13"]
-        # macOS minutes count 10x; the Artifacts workflow already runs the zipapp there on Python 3.9.
-        exclude:
-          - os: macos-latest
-            python-version: "3.9"
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install
