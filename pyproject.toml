@@ -37,5 +37,5 @@ where = ["src"]
 testpaths = ["tests"]
 
 [tool.mypy]
-files = ["src", "tests"]
+files = ["src", "tests", "scripts"]
 strict = true

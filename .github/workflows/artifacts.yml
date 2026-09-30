@@ -1,0 +1,128 @@
+name: Artifacts
+
+# Runs only when the artifacts can change, to save Actions minutes (macOS counts 10x, Windows 2x).
+# macOS jobs run only on release tags: the macOS executable is a bonus the maintainer can't test.
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "scripts/**"
+      - "tests/fake_easyucs.py"
+      - "pyproject.toml"
+      - ".github/workflows/artifacts.yml"
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  executable:
+    name: Executable (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(startsWith(github.ref, 'refs/tags/v') && '["windows-latest", "macos-latest"]' || '["windows-latest"]') }}
+    runs-on: ${{ matrix.os }}
+    env:
+      EXECUTABLE: ${{ matrix.os == 'windows-latest' && 'dist/eucs.exe' || 'dist/eucs' }}
+      ARTIFACT: ${{ matrix.os == 'windows-latest' && 'eucs-windows-x86_64' || 'eucs-macos-arm64' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Install
+        run: python -m pip install . pyinstaller
+      - name: Build
+        run: python scripts/build_executable.py
+      - name: Smoke test
+        run: python scripts/smoke_test.py ${{ env.EXECUTABLE }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.ARTIFACT }}
+          path: ${{ env.EXECUTABLE }}
+          if-no-files-found: error
+          retention-days: 7
+
+  # Built on AlmaLinux 8 (glibc 2.28) so that the executable runs on RHEL 8+, its rebuilds,
+  # Ubuntu 22.04+ and SLES 15 SP4+.
+  linux-executable:
+    name: Executable (almalinux:8)
+    runs-on: ubuntu-latest
+    container: almalinux:8
+    steps:
+      - name: Install Python
+        run: dnf install -y python3.12 python3.12-pip binutils
+      - uses: actions/checkout@v7
+      - name: Install
+        run: python3.12 -m pip install . pyinstaller
+      - name: Build
+        run: python3.12 scripts/build_executable.py
+      - name: Smoke test
+        run: python3.12 scripts/smoke_test.py dist/eucs
+      - uses: actions/upload-artifact@v7
+        with:
+          name: eucs-linux-x86_64
+          path: dist/eucs
+          if-no-files-found: error
+          retention-days: 7
+
+  zipapp:
+    name: Zipapp
+    # Pinned: setup-python may not provide Python 3.9 on later Ubuntu releases.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        id: oldest
+        with:
+          python-version: "3.9"
+      - uses: actions/setup-python@v7
+        id: recent
+        with:
+          python-version: "3.13"
+      - name: Build
+        run: ${{ steps.oldest.outputs.python-path }} scripts/build_zipapp.py
+      - name: Smoke test with Python 3.9
+        run: ${{ steps.oldest.outputs.python-path }} scripts/smoke_test.py ${{ steps.oldest.outputs.python-path }} dist/eucs.pyz
+      - name: Smoke test with Python 3.13
+        run: ${{ steps.recent.outputs.python-path }} scripts/smoke_test.py ${{ steps.recent.outputs.python-path }} dist/eucs.pyz
+      - uses: actions/upload-artifact@v7
+        with:
+          name: eucs-zipapp
+          path: dist/eucs.pyz
+          if-no-files-found: error
+          retention-days: 7
+
+  zipapp-on-other-os:
+    name: Zipapp on ${{ matrix.os }}
+    needs: zipapp
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(startsWith(github.ref, 'refs/tags/v') && '["windows-latest", "macos-latest"]' || '["windows-latest"]') }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        id: oldest
+        with:
+          python-version: "3.9"
+      - uses: actions/setup-python@v7
+        id: recent
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@v8
+        with:
+          name: eucs-zipapp
+          path: dist
+      - name: Smoke test with Python 3.9
+        run: ${{ steps.oldest.outputs.python-path }} scripts/smoke_test.py ${{ steps.oldest.outputs.python-path }} dist/eucs.pyz
+      - name: Smoke test with Python 3.13
+        run: ${{ steps.recent.outputs.python-path }} scripts/smoke_test.py ${{ steps.recent.outputs.python-path }} dist/eucs.pyz
