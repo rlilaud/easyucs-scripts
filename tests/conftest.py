@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable, Iterator, Optional
+from typing import Callable, Iterator, Optional, Sequence
 
 import pytest
 from fake_easyucs import FakeEasyUCS
@@ -14,6 +14,13 @@ RunEucs = Callable[..., Result]
 
 @pytest.fixture
 def fake_easyucs() -> Iterator[FakeEasyUCS]:
+    with FakeEasyUCS() as fake:
+        yield fake
+
+
+@pytest.fixture
+def other_easyucs() -> Iterator[FakeEasyUCS]:
+    """A second fake EasyUCS Instance, for runs over several Instances."""
     with FakeEasyUCS() as fake:
         yield fake
 
@@ -37,14 +44,28 @@ def run_eucs() -> RunEucs:
     return run
 
 
+RunExtractFrom = Callable[..., Result]
+
+
+@pytest.fixture
+def run_extract_from(run_eucs: RunEucs) -> RunExtractFrom:
+    """Run `eucs extract <sources> --output <output>` without waiting between task polls, where
+    `sources` are the `--instances` and `--url` options."""
+
+    def run(sources: Sequence[str], output: Path, *extra: str) -> Result:
+        return run_eucs("extract", *sources, "--output", str(output), "--poll-interval", "0", *extra)
+
+    return run
+
+
 RunExtract = Callable[..., Result]
 
 
 @pytest.fixture
-def run_extract(run_eucs: RunEucs) -> RunExtract:
+def run_extract(run_extract_from: RunExtractFrom) -> RunExtract:
     """Run `eucs extract --url <url> --output <output>` without waiting between task polls."""
 
     def run(url: str, output: Path, *extra: str) -> Result:
-        return run_eucs("extract", "--url", url, "--output", str(output), "--poll-interval", "0", *extra)
+        return run_extract_from(["--url", url], output, *extra)
 
     return run

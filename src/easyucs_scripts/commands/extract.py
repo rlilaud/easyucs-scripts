@@ -1,4 +1,4 @@
-"""`eucs extract`: save the Config and Inventory of the selected Devices of an Instance."""
+"""`eucs extract`: save the Config and Inventory of the selected Devices of one or more Instances."""
 
 from enum import Enum
 from pathlib import Path
@@ -18,7 +18,7 @@ from easyucs_scripts.extraction import (
     all_succeeded,
     extract_instance,
 )
-from easyucs_scripts.instances import instance_from_url
+from easyucs_scripts.instances import InstanceDefinitionError, resolve_instances
 from easyucs_scripts.output import RunFolder
 
 console = Console(soft_wrap=True)
@@ -33,13 +33,25 @@ class DeviceType(str, Enum):
 
 
 def extract(
-    url: Annotated[
-        str,
+    instances_file: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--instances",
+            help="YAML or JSON Instances file listing the EasyUCS Instances to extract.",
+            show_default=False,
+        ),
+    ] = None,
+    urls: Annotated[
+        Optional[list[str]],
         typer.Option(
             "--url",
-            help="Root URL of the EasyUCS Instance, as typed in a browser (e.g. http://10.0.0.5:5010).",
+            help=(
+                "Root URL of an EasyUCS Instance, as typed in a browser (e.g. http://10.0.0.5:5010)."
+                " Repeat to extract several Instances; combines with --instances."
+            ),
+            show_default=False,
         ),
-    ],
+    ] = None,
     types: Annotated[
         Optional[list[DeviceType]],
         typer.Option(
@@ -91,12 +103,14 @@ def extract(
     ] = False,
     poll_interval: Annotated[float, typer.Option("--poll-interval", hidden=True)] = 2.0,
 ) -> None:
-    """Fetch and save the Config and Inventory of every Device of an EasyUCS Instance,
+    """Fetch and save the Config and Inventory of every Device of the given EasyUCS Instances,
     or only of those selected with --type and --device."""
+    if instances_file is None and not urls:
+        raise typer.BadParameter("give at least one Instance to extract", param_hint="'--instances' / '--url'")
     try:
-        instance = instance_from_url(url)
-    except ValueError as exc:
-        raise typer.BadParameter(str(exc), param_hint="--url") from exc
+        instances = resolve_instances(instances_file, urls or [])
+    except InstanceDefinitionError as exc:
+        raise typer.BadParameter(str(exc)) from exc
     try:
         timeout_seconds = parse_duration(timeout)
     except ValueError as exc:
@@ -107,20 +121,22 @@ def extract(
     run = RunFolder.create(output)
     console.print(f"Run folder: {escape(str(run.path))}")
     results: list[Result] = []
-    for result in extract_instance(
-        instance,
-        run,
-        device_filter=device_filter,
-        fetch=not no_fetch,
-        force=force,
-        poll_interval=poll_interval,
-        timeout=timeout_seconds,
-    ):
-        results.append(result)
-        _print_result(result, device_filter)
+    for instance in instances:
+        for result in extract_instance(
+            instance,
+            run,
+            device_filter=device_filter,
+            fetch=not no_fetch,
+            force=force,
+            poll_interval=poll_interval,
+            timeout=timeout_seconds,
+        ):
+            results.append(result)
+            _print_result(result, device_filter)
 
     parameters = {
-        "urls": [instance.url],
+        "instances_file": None if instances_file is None else str(instances_file),
+        "urls": list(urls or []),
         "device_types": sorted(device_filter.types),
         "device_names": sorted(device_filter.names),
         "output": str(output),
@@ -128,7 +144,7 @@ def extract(
         "force": force,
         "timeout_seconds": timeout_seconds,
     }
-    summary_path = run.write_summary(parameters, [instance], results)
+    summary_path = run.write_summary(parameters, instances, results)
     console.print(_summary_table(results))
     console.print(f"Summary: {escape(str(summary_path))}")
     if not all_succeeded(results):
