@@ -6,6 +6,7 @@ import socket
 from pathlib import Path
 from typing import Any
 
+import trustme
 from conftest import RunEucs, RunExtract, RunExtractFrom
 from fake_easyucs import FakeDevice, FakeEasyUCS
 
@@ -769,3 +770,73 @@ def test_each_device_has_a_progress_bar_that_ends_showing_its_outcome(
     assert re.search(rf"{instance} / rack-01 \(cimc\).*failed", progress)
     # Stuck at 50% of its Config Fetch, the first of its two tasks.
     assert re.search(rf"{instance} / central \(ucsc\).* 25%.*failed", progress)
+
+
+def test_an_instance_whose_certificate_is_not_trusted_fails_suggesting_a_ca_bundle(
+    run_extract: RunExtract, https_easyucs: FakeEasyUCS, tmp_path: Path
+) -> None:
+    device = https_easyucs.add_device("fi-a", "ucsm")
+
+    result = run_extract(https_easyucs.url, tmp_path)
+
+    assert result.exit_code == 1
+    (instance,) = read_summary(tmp_path)["instances"]
+    assert instance["outcome"] == "failed"
+    assert "certificate" in instance["reason"]
+    assert "ca_bundle" in instance["reason"]
+    assert device.fetch_forces == []
+
+
+def test_an_instance_is_verified_against_its_ca_bundle(
+    run_extract_from: RunExtractFrom, https_easyucs: FakeEasyUCS, test_ca: trustme.CA, tmp_path: Path
+) -> None:
+    device = https_easyucs.add_device("fi-a", "ucsm")
+    test_ca.cert_pem.write_to_path(str(tmp_path / "company-ca.pem"))
+    instances_file = tmp_path / "instances.yaml"
+    instances_file.write_text(
+        f"instances:\n  - name: paris\n    url: {https_easyucs.url}\n    ca_bundle: company-ca.pem\n", encoding="utf-8"
+    )
+
+    result = run_extract_from(["--instances", str(instances_file)], tmp_path / "out")
+
+    assert result.exit_code == 0, result.output
+    assert_saved(only_child(tmp_path / "out") / "paris", device)
+
+
+def test_disabling_tls_verification_for_an_instance_extracts_it_with_a_warning_naming_it(
+    run_extract_from: RunExtractFrom, https_easyucs: FakeEasyUCS, fake_easyucs: FakeEasyUCS, tmp_path: Path
+) -> None:
+    lab_device = https_easyucs.add_device("fi-a", "ucsm")
+    fake_easyucs.add_device("rack-01", "cimc")
+    instances_file = tmp_path / "instances.yaml"
+    instances_file.write_text(
+        f"instances:\n  - name: lab\n    url: {https_easyucs.url}\n    verify_tls: false\n"
+        f"  - name: paris\n    url: {fake_easyucs.url}\n",
+        encoding="utf-8",
+    )
+
+    result = run_extract_from(["--instances", str(instances_file)], tmp_path / "out")
+
+    assert result.exit_code == 0, result.output
+    assert_saved(only_child(tmp_path / "out") / "lab", lab_device)
+    warnings = [line for line in result.output.splitlines() if "WARNING" in line]
+    assert len(warnings) == 1
+    assert "TLS" in warnings[0] and "'lab'" in warnings[0]
+
+
+def test_a_missing_ca_bundle_file_is_rejected_before_any_extraction(
+    run_extract_from: RunExtractFrom, https_easyucs: FakeEasyUCS, tmp_path: Path
+) -> None:
+    device = https_easyucs.add_device("fi-a", "ucsm")
+    instances_file = tmp_path / "instances.yaml"
+    instances_file.write_text(
+        f"instances:\n  - name: paris\n    url: {https_easyucs.url}\n    ca_bundle: missing-ca.pem\n", encoding="utf-8"
+    )
+
+    result = run_extract_from(["--instances", str(instances_file)], tmp_path / "out")
+
+    assert result.exit_code == 2
+    assert "ca_bundle" in result.output
+    assert "missing-ca.pem" in result.output
+    assert device.fetch_forces == []
+    assert not (tmp_path / "out").exists()

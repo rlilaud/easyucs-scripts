@@ -6,9 +6,11 @@ import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Callable, Iterator, Optional
+from pathlib import Path
+from typing import Any, Callable, Iterator, Optional, Union
 
 import requests
+import urllib3
 
 from easyucs_scripts.durations import format_duration
 
@@ -17,6 +19,10 @@ ProgressCallback = Callable[[str, float], None]
 API_PATH = "/api/v1"
 REQUEST_TIMEOUT_SECONDS = 60
 _UNFINISHED_TASK_STATUSES = ("pending", "in_progress")
+_CA_BUNDLE_HINT = (
+    "If the Instance's TLS certificate is issued by an internal CA, list the Instance in an"
+    " Instances file with 'ca_bundle' set to that CA's certificate file"
+)
 
 
 class EasyUCSError(Exception):
@@ -38,10 +44,16 @@ class Device:
 class EasyUCSClient:
     """May be used from several threads at once."""
 
-    def __init__(self, root_url: str) -> None:
+    def __init__(self, root_url: str, *, verify_tls: bool = True, ca_bundle: Optional[Path] = None) -> None:
+        """Over HTTPS, the Instance's certificate is verified against `ca_bundle` if given, else
+        against the trusted CAs, unless `verify_tls` is false."""
         # The `servers` URL in EasyUCS's published spec is wrong, so the API root is
         # always derived from the root URL the operator gives.
         self.api_url = root_url.rstrip("/") + API_PATH
+        self._verify: Union[bool, str] = verify_tls if ca_bundle is None else str(ca_bundle)
+        if not verify_tls:
+            # The operator is warned once per run instead, not once per host amid the progress bars.
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         self._thread_local = threading.local()
 
     @property
@@ -152,7 +164,12 @@ class EasyUCSClient:
     def _request(self, method: str, path: str, **kwargs: Any) -> requests.Response:
         url = self.api_url + path
         try:
-            response = self._session.request(method, url, timeout=REQUEST_TIMEOUT_SECONDS, **kwargs)
+            # Given to each request because a Session's own `verify` loses to REQUESTS_CA_BUNDLE.
+            response = self._session.request(
+                method, url, timeout=REQUEST_TIMEOUT_SECONDS, verify=self._verify, **kwargs
+            )
+        except requests.exceptions.SSLError as exc:
+            raise EasyUCSError(f"{method} {url} failed: {exc}. {_CA_BUNDLE_HINT}") from exc
         except requests.RequestException as exc:
             raise EasyUCSError(f"{method} {url} failed: {exc}") from exc
         if not response.ok:

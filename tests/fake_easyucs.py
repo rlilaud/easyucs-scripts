@@ -6,7 +6,8 @@ otherwise. A Fetch task reports `pending`, then `in_progress`, then the Device's
 `task_outcome`; it stores a new, distinguishable artifact only when it reports `successful`,
 so tests can tell fresh artifacts from stale ones. Each Device records the `force` value of
 every Fetch request it receives. Setting `FakeEasyUCS.error` makes every request fail, and
-`FakeEasyUCS.devices_response` replaces the body of the Device listing.
+`FakeEasyUCS.devices_response` replaces the body of the Device listing. Given an SSL context,
+the fake serves HTTPS instead of HTTP.
 
 A Device's Fetch lasts from its Config Fetch request until its Inventory task ends, or until
 any of its tasks fails. Setting `FakeEasyUCS.task_seconds` keeps every task `in_progress` for at
@@ -23,6 +24,7 @@ from __future__ import annotations
 import itertools
 import json
 import re
+import ssl
 import threading
 import time
 import uuid
@@ -82,7 +84,7 @@ class _FetchTask:
 
 
 class FakeEasyUCS:
-    def __init__(self) -> None:
+    def __init__(self, tls: Optional[ssl.SSLContext] = None) -> None:
         self.devices: list[FakeDevice] = []
         self.error: Optional[tuple[int, str]] = None
         self.devices_response: Optional[Any] = None
@@ -93,6 +95,9 @@ class FakeEasyUCS:
         self._clock = itertools.count(1)
         self._lock = threading.Lock()
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), _handler_for(self))
+        if tls is not None:
+            self._server.socket = tls.wrap_socket(self._server.socket, server_side=True)
+        self._scheme = "http" if tls is None else "https"
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
 
     @property
@@ -101,7 +106,7 @@ class FakeEasyUCS:
 
     @property
     def url(self) -> str:
-        return f"http://127.0.0.1:{self.port}"
+        return f"{self._scheme}://127.0.0.1:{self.port}"
 
     def __enter__(self) -> FakeEasyUCS:
         self._thread.start()

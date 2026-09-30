@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
 
 import pytest
 
@@ -11,6 +11,7 @@ from easyucs_scripts.instances import Instance, InstanceDefinitionError, resolve
 
 def write(tmp_path: Path, text: str, filename: str = "instances.yaml") -> Path:
     path = tmp_path / filename
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
     return path
 
@@ -32,7 +33,7 @@ def resolve_error(instances_file: Optional[Path], urls: Sequence[str]) -> str:
 
 
 def test_a_yaml_file_lists_instances_with_their_options(tmp_path: Path) -> None:
-    ca_bundle = tmp_path / "pki" / "company-ca.pem"
+    ca_bundle = write(tmp_path, "company CA", "pki/company-ca.pem")
     instances = load(
         tmp_path,
         f"""
@@ -69,6 +70,8 @@ def test_tls_is_verified_without_a_ca_bundle_by_default(tmp_path: Path) -> None:
 
 
 def test_a_relative_ca_bundle_is_relative_to_the_instances_file(tmp_path: Path) -> None:
+    write(tmp_path, "company CA", "pki/ca.pem")
+
     (instance,) = load(tmp_path, "instances:\n  - url: https://easyucs.example.com\n    ca_bundle: pki/ca.pem\n")
 
     assert instance.ca_bundle == tmp_path / "pki" / "ca.pem"
@@ -256,6 +259,19 @@ def test_fields_of_the_wrong_type_are_rejected(tmp_path: Path, entry: str, field
 
     assert "entry 1" in message
     assert f"'{field}'" in message
+
+
+@pytest.mark.parametrize("make_bundle", [lambda path: None, lambda path: path.mkdir()], ids=["missing", "folder"])
+def test_a_ca_bundle_that_cannot_be_read_is_rejected_naming_the_entry(
+    tmp_path: Path, make_bundle: Callable[[Path], None]
+) -> None:
+    make_bundle(tmp_path / "ca.pem")
+
+    message = load_error(tmp_path, "instances:\n  - url: https://easyucs.example.com\n    ca_bundle: ca.pem\n")
+
+    assert "entry 1" in message
+    assert "'ca_bundle'" in message
+    assert str(tmp_path / "ca.pem") in message
 
 
 def test_a_ca_bundle_with_tls_verification_disabled_is_contradictory(tmp_path: Path) -> None:

@@ -119,21 +119,24 @@ def _parse_entry(entry: Any, context: _EntryContext) -> Instance:
         raise context.error("must be true or false", "verify_tls")
 
     ca_bundle = entry.get("ca_bundle")
+    ca_bundle_path = None
     if ca_bundle is not None:
         if not isinstance(ca_bundle, str) or not ca_bundle:
             raise context.error("must be the path of a CA bundle file", "ca_bundle")
         if not verify_tls:
             raise context.error("'ca_bundle' is only used to verify TLS; remove it or set 'verify_tls: true'")
+        ca_bundle_path = context.path.parent / ca_bundle
+        try:
+            ca_bundle_path.read_bytes()
+        except OSError as exc:
+            raise context.error(
+                f"cannot read CA bundle file {ca_bundle_path}: {exc.strerror or exc}", "ca_bundle"
+            ) from None
 
     if "auth" in entry:
         _check_auth(entry["auth"], context)
 
-    return Instance(
-        url=url,
-        name=name,
-        verify_tls=verify_tls,
-        ca_bundle=None if ca_bundle is None else context.path.parent / ca_bundle,
-    )
+    return Instance(url=url, name=name, verify_tls=verify_tls, ca_bundle=ca_bundle_path)
 
 
 def _check_auth(auth: Any, context: _EntryContext) -> None:
