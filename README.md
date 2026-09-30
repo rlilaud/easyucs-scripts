@@ -207,16 +207,27 @@ The same file in JSON:
 | `ca_bundle` | no | PEM file of the CA certificates to trust for this Instance. A relative path is relative to the Instances file's folder. See [TLS](#tls). |
 | `auth` | no | Authentication block, reserved for the future. See below. |
 
-Every Instance, from the file or from `--url`, must end up with a distinct name; give `name` to tell apart two Instances on the same host and port. Unknown fields are rejected so that typos don't pass silently, and every error names the file, the entry and the field at fault.
+Every Instance, from the file or from `--url`, must end up with a distinct name; give `name` to tell apart two Instances on the same host and port. Unknown fields are rejected so that typos don't pass silently, and an error in an entry names the file, the entry and the field at fault.
 
 ### The `auth` block
 
 EasyUCS has no authentication today, but the Instances file already reserves an `auth` block so that your files keep working when it does:
 
 - `type` is required in the block. Only `none` is accepted today; any other type is refused with a clear error, so you are never led to believe credentials are being used.
-- `username` and `password_env` are reserved for future authentication types. `password_env` holds the **name of an environment variable** that holds the password, never the password itself.
+- `username` and `password_env` are reserved for future authentication types. `password_env` holds the **name of an environment variable** that holds the password, never the password itself. When such a type exists and the variable is not set, `eucs` will ask for the password with a masked prompt instead.
 
-A `password` field, at the top of an entry or in `auth`, is always refused. A plain-text password in a file ends up in backups, shared folders and repositories; reading it from an environment variable keeps it out of every file. For the same reason, URLs containing `user:password@` are refused, and `eucs` never writes secrets or authentication headers to the console, `run.log` or `summary.json`.
+```yaml
+instances:
+  - url: https://easyucs-paris.example.com
+    name: paris
+    auth:
+      type: none                   # the only type accepted today
+      # Reserved for a future authentication type:
+      # username: operator
+      # password_env: EUCS_PARIS_PASSWORD
+```
+
+A `password` field, at the top of an entry or in `auth`, is always refused. A plain-text password in a file ends up in backups, shared folders and repositories; reading it from an environment variable keeps it out of every file. For the same reason, URLs containing `@`, as in `user:password@host`, are refused, and `eucs` never writes secrets or authentication headers to the console, `run.log` or `summary.json`.
 
 ## Output
 
@@ -294,12 +305,12 @@ File paths in `summary.json` are relative to the run folder, with `/` separators
 
 ## TLS
 
-For `https://` Instances, `eucs` verifies the Instance's certificate by default. Without `ca_bundle`, it is verified against the public CAs bundled with `eucs` (the Mozilla list shipped by [certifi](https://pypi.org/project/certifi/)), **not** against your operating system's certificate store. For an Instance whose certificate is issued by an internal CA, list it in an Instances file and set `ca_bundle`.
+For `https://` Instances, `eucs` verifies the Instance's certificate by default. Without `ca_bundle`, it is verified against the public CAs bundled with `eucs` (the Mozilla list shipped by [certifi](https://pypi.org/project/certifi/)), **not** against your operating system's certificate store, unless the `REQUESTS_CA_BUNDLE` or `CURL_CA_BUNDLE` environment variable names another CA bundle file. For an Instance whose certificate is issued by an internal CA, list it in an Instances file and set `ca_bundle`.
 
 - **`ca_bundle: <file>`**: the PEM file of the CA certificates that issued the Instance's certificate (the root CA, plus any intermediate CA the Instance does not send). A relative path is relative to the Instances file's folder.
 - **`verify_tls: false`**: disables verification for that Instance, for lab Instances with self-signed certificates. Anyone on the network path could then intercept the connection, so `eucs` prints a warning on every run. `ca_bundle` and `verify_tls: false` cannot be combined.
 
-These options exist only in the Instances file; an Instance given with `--url` is always verified against the bundled public CAs.
+These options exist only in the Instances file; an Instance given with `--url` is verified against the bundled public CAs, or the bundle named by `REQUESTS_CA_BUNDLE` or `CURL_CA_BUNDLE`.
 
 ### Checking a CA bundle
 
@@ -314,7 +325,7 @@ This shows the first certificate of the file; if the bundle holds several, check
 - **Validity**: `Not Before` is in the past and `Not After` is in the future. An expired CA certificate makes every connection fail.
 - **Key strength**: under `Subject Public Key Info`, an RSA key of at least 2048 bits (`Public-Key: (2048 bit)` or more), or an EC key on P-256 or stronger (`NIST CURVE: P-256`, `P-384` or `P-521`).
 - **Signature algorithm**: from the SHA-2 family, such as `sha256WithRSAEncryption` or `ecdsa-with-SHA256`. Never `md5` or `sha1`, which allow certificate forgery.
-- **Issuer and Subject**: they are identical for a root CA, which is expected. They should not be identical for the Instance's own certificate: a self-signed server certificate is only acceptable in a lab, where `verify_tls: false` is the honest setting.
+- **Issuer and Subject**: they are identical for a root CA, which is expected. They should not be identical for the Instance's own certificate: a self-signed Instance certificate is only acceptable in a lab, where `verify_tls: false` is the honest setting.
 
 ## Development and releases
 
