@@ -132,6 +132,14 @@ def extract(
 
     device_filter = DeviceFilter(types=frozenset(t.value for t in types or ()), names=frozenset(names or ()))
 
+    for instance in instances:
+        if not instance.verify_tls:
+            console.print(
+                f"[bold red]WARNING:[/bold red] [bold]TLS certificate verification is disabled for Instance"
+                f" {escape(repr(instance.name))}[/bold] (verify_tls: false): its connection could be intercepted."
+                " Prefer 'ca_bundle' to trust an internal CA."
+            )
+
     run = RunFolder.create(output, [instance.name for instance in instances])
     console.print(f"Run folder: {escape(str(run.path))}")
     with _progress_bars() as progress:

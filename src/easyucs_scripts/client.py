@@ -6,9 +6,11 @@ import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Callable, Iterator, Optional
+from pathlib import Path
+from typing import Any, Callable, Iterator, Optional, Union
 
 import requests
+import urllib3
 
 from easyucs_scripts.durations import format_duration
 
@@ -38,10 +40,17 @@ class Device:
 class EasyUCSClient:
     """May be used from several threads at once."""
 
-    def __init__(self, root_url: str) -> None:
+    def __init__(self, root_url: str, *, verify_tls: bool = True, ca_bundle: Optional[Path] = None) -> None:
+        """Over HTTPS, the Instance's certificate is verified against `ca_bundle` if given, else
+        against the trusted CAs, unless `verify_tls` is false."""
         # The `servers` URL in EasyUCS's published spec is wrong, so the API root is
         # always derived from the root URL the operator gives.
         self.api_url = root_url.rstrip("/") + API_PATH
+        self._verify: Union[bool, str] = verify_tls if ca_bundle is None else str(ca_bundle)
+        self._ca_bundle = ca_bundle
+        if not verify_tls:
+            # The operator is warned once per run instead, not once per host amid the progress bars.
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         self._thread_local = threading.local()
 
     @property
@@ -152,12 +161,27 @@ class EasyUCSClient:
     def _request(self, method: str, path: str, **kwargs: Any) -> requests.Response:
         url = self.api_url + path
         try:
-            response = self._session.request(method, url, timeout=REQUEST_TIMEOUT_SECONDS, **kwargs)
+            # Given to each request because a Session's own `verify` loses to REQUESTS_CA_BUNDLE.
+            response = self._session.request(
+                method, url, timeout=REQUEST_TIMEOUT_SECONDS, verify=self._verify, **kwargs
+            )
+        except requests.exceptions.SSLError as exc:
+            raise EasyUCSError(f"{method} {url} failed: {exc}{self._certificate_hint(exc)}") from exc
         except requests.RequestException as exc:
             raise EasyUCSError(f"{method} {url} failed: {exc}") from exc
         if not response.ok:
             raise EasyUCSError(f"{method} {url} failed: HTTP {response.status_code}: {_error_message(response)}")
         return response
+
+    def _certificate_hint(self, error: requests.exceptions.SSLError) -> str:
+        if "CERTIFICATE_VERIFY_FAILED" not in str(error):
+            return ""
+        if self._ca_bundle is not None:
+            return f". Check that the CA bundle {self._ca_bundle} holds the CA that issued the Instance's certificate"
+        return (
+            ". If the Instance's certificate is issued by an internal CA, list the Instance in an"
+            " Instances file and set 'ca_bundle' to that CA's certificate file"
+        )
 
 
 @contextmanager

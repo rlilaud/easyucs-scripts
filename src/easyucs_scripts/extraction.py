@@ -140,7 +140,7 @@ def extract_instances(
 
 
 def _extract_instance(instance: Instance, options: _Options) -> list[Result]:
-    client = EasyUCSClient(instance.url)
+    client = EasyUCSClient(instance.url, verify_tls=instance.verify_tls, ca_bundle=instance.ca_bundle)
     try:
         listed = client.list_devices()
     except EasyUCSError as exc:
