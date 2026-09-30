@@ -6,8 +6,8 @@ import socket
 from pathlib import Path
 from typing import Any
 
-from conftest import RunEucs, RunExtract
-from fake_easyucs import FakeEasyUCS
+from conftest import RunEucs, RunExtract, RunExtractFrom
+from fake_easyucs import FakeDevice, FakeEasyUCS
 
 
 def only_child(folder: Path) -> Path:
@@ -383,6 +383,7 @@ def test_summary_records_run_parameters_and_the_outcome_and_files_of_every_devic
     assert result.exit_code == 1
     summary = read_summary(tmp_path)
     assert summary["parameters"] == {
+        "instances_file": None,
         "urls": [fake_easyucs.url],
         "device_types": ["cimc", "ucsm"],
         "device_names": [],
@@ -496,3 +497,145 @@ def test_an_unreachable_instance_is_recorded_as_a_failed_instance(run_extract: R
     (instance,) = read_summary(tmp_path)["instances"]
     assert instance["outcome"] == "failed"
     assert f"GET {url}/api/v1/devices failed" in instance["reason"]
+
+
+def write_instances_file(folder: Path, entries: list[tuple[str, str]]) -> Path:
+    """Write an Instances file listing `(name, url)` entries."""
+    path = folder / "instances.yaml"
+    lines = ["instances:"] + [f"  - name: {name}\n    url: {url}" for name, url in entries]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def assert_saved(instance_folder: Path, device: FakeDevice) -> None:
+    device_folder = instance_folder / device.name
+    assert (device_folder / "config.json").read_bytes() == device.latest_config
+    assert (device_folder / "inventory.json").read_bytes() == device.latest_inventory
+
+
+def test_extracts_every_instance_listed_in_an_instances_file(
+    run_extract_from: RunExtractFrom, fake_easyucs: FakeEasyUCS, other_easyucs: FakeEasyUCS, tmp_path: Path
+) -> None:
+    fi_a = fake_easyucs.add_device("fi-a", "ucsm")
+    fake_easyucs.add_device("ucsm_catalog.easyucs", "ucsm", is_system=True)
+    central = other_easyucs.add_device("central", "ucsc")
+    instances_file = write_instances_file(tmp_path, [("paris", fake_easyucs.url), ("lyon", other_easyucs.url)])
+
+    result = run_extract_from(["--instances", str(instances_file)], tmp_path / "out")
+
+    assert result.exit_code == 0, result.output
+    run_folder = only_child(tmp_path / "out")
+    assert sorted(p.name for p in run_folder.iterdir()) == ["lyon", "paris", "summary.json"]
+    assert_saved(run_folder / "paris", fi_a)
+    assert_saved(run_folder / "lyon", central)
+    summary = json.loads((run_folder / "summary.json").read_text(encoding="utf-8"))
+    assert summary["parameters"]["instances_file"] == str(instances_file)
+    assert summary["parameters"]["urls"] == []
+    assert [(i["name"], i["url"], i["outcome"]) for i in summary["instances"]] == [
+        ("paris", fake_easyucs.url, "succeeded"),
+        ("lyon", other_easyucs.url, "succeeded"),
+    ]
+    assert [(d["instance"], d["name"]) for d in summary["devices"]] == [("paris", "fi-a"), ("lyon", "central")]
+
+
+def test_url_can_be_repeated_to_extract_several_instances(
+    run_extract_from: RunExtractFrom, fake_easyucs: FakeEasyUCS, other_easyucs: FakeEasyUCS, tmp_path: Path
+) -> None:
+    fi_a = fake_easyucs.add_device("fi-a", "ucsm")
+    central = other_easyucs.add_device("central", "ucsc")
+
+    result = run_extract_from(["--url", fake_easyucs.url, "--url", other_easyucs.url], tmp_path)
+
+    assert result.exit_code == 0, result.output
+    run_folder = only_child(tmp_path)
+    assert_saved(run_folder / f"127.0.0.1_{fake_easyucs.port}", fi_a)
+    assert_saved(run_folder / f"127.0.0.1_{other_easyucs.port}", central)
+    assert read_summary(tmp_path)["parameters"]["urls"] == [fake_easyucs.url, other_easyucs.url]
+
+
+def test_an_instances_file_and_urls_combine(
+    run_extract_from: RunExtractFrom, fake_easyucs: FakeEasyUCS, other_easyucs: FakeEasyUCS, tmp_path: Path
+) -> None:
+    fi_a = fake_easyucs.add_device("fi-a", "ucsm")
+    central = other_easyucs.add_device("central", "ucsc")
+    instances_file = write_instances_file(tmp_path, [("paris", fake_easyucs.url)])
+
+    result = run_extract_from(["--instances", str(instances_file), "--url", other_easyucs.url], tmp_path / "out")
+
+    assert result.exit_code == 0, result.output
+    run_folder = only_child(tmp_path / "out")
+    assert_saved(run_folder / "paris", fi_a)
+    assert_saved(run_folder / f"127.0.0.1_{other_easyucs.port}", central)
+
+
+def test_no_instance_source_is_a_clear_error(run_extract_from: RunExtractFrom, tmp_path: Path) -> None:
+    result = run_extract_from([], tmp_path)
+
+    assert result.exit_code == 2
+    assert "--instances" in result.output
+    assert "--url" in result.output
+    assert not tmp_path.exists() or not any(tmp_path.iterdir())
+
+
+def test_an_invalid_instances_file_is_rejected_before_any_extraction(
+    run_extract_from: RunExtractFrom, fake_easyucs: FakeEasyUCS, tmp_path: Path
+) -> None:
+    device = fake_easyucs.add_device("fi-a", "ucsm")
+    instances_file = tmp_path / "instances.yaml"
+    instances_file.write_text(f"instances:\n  - url: {fake_easyucs.url}\n  - nmae: lyon\n", encoding="utf-8")
+
+    result = run_extract_from(["--instances", str(instances_file)], tmp_path / "out")
+
+    assert result.exit_code == 2
+    assert "entry 2" in result.output
+    assert "nmae" in result.output
+    assert device.fetch_forces == []
+    assert not (tmp_path / "out").exists()
+
+
+def test_duplicate_instance_names_across_file_and_url_are_rejected_before_any_extraction(
+    run_extract_from: RunExtractFrom, fake_easyucs: FakeEasyUCS, other_easyucs: FakeEasyUCS, tmp_path: Path
+) -> None:
+    device = fake_easyucs.add_device("fi-a", "ucsm")
+    other_device = other_easyucs.add_device("central", "ucsc")
+    clashing_name = f"127.0.0.1_{fake_easyucs.port}"
+    instances_file = write_instances_file(tmp_path, [(clashing_name, other_easyucs.url)])
+
+    result = run_extract_from(["--instances", str(instances_file), "--url", fake_easyucs.url], tmp_path / "out")
+
+    assert result.exit_code == 2
+    assert clashing_name in result.output
+    assert (device.fetch_forces, other_device.fetch_forces) == ([], [])
+    assert not (tmp_path / "out").exists()
+
+
+def test_a_failed_instance_does_not_stop_the_others(
+    run_extract_from: RunExtractFrom, fake_easyucs: FakeEasyUCS, tmp_path: Path
+) -> None:
+    fi_a = fake_easyucs.add_device("fi-a", "ucsm")
+    down_url = f"http://127.0.0.1:{closed_port()}"
+
+    result = run_extract_from(["--url", down_url, "--url", fake_easyucs.url], tmp_path)
+
+    assert result.exit_code == 1
+    assert_saved(only_child(tmp_path) / f"127.0.0.1_{fake_easyucs.port}", fi_a)
+    down, up = read_summary(tmp_path)["instances"]
+    assert (down["url"], down["outcome"]) == (down_url, "failed")
+    assert (up["url"], up["outcome"]) == (fake_easyucs.url, "succeeded")
+
+
+def test_instances_whose_safe_names_clash_get_distinct_folders(
+    run_extract_from: RunExtractFrom, fake_easyucs: FakeEasyUCS, other_easyucs: FakeEasyUCS, tmp_path: Path
+) -> None:
+    fi_a = fake_easyucs.add_device("fi-a", "ucsm")
+    fi_b = other_easyucs.add_device("fi-b", "ucsm")
+    instances_file = write_instances_file(tmp_path, [("'lab:a'", fake_easyucs.url), ("'lab/a'", other_easyucs.url)])
+
+    result = run_extract_from(["--instances", str(instances_file)], tmp_path / "out")
+
+    assert result.exit_code == 0, result.output
+    run_folder = only_child(tmp_path / "out")
+    assert_saved(run_folder / "lab_a", fi_a)
+    assert_saved(run_folder / "lab_a_2", fi_b)
+    files = [d["files"]["config"] for d in read_summary(tmp_path / "out")["devices"]]
+    assert files == ["lab_a/fi-a/config.json", "lab_a_2/fi-b/config.json"]

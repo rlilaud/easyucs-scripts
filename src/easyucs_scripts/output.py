@@ -42,6 +42,7 @@ class RunFolder:
 
     def __init__(self, path: Path) -> None:
         self.path = path
+        self._instance_folders: dict[str, Path] = {}
 
     @classmethod
     def create(cls, output_dir: Path) -> RunFolder:
@@ -49,8 +50,10 @@ class RunFolder:
         return cls(_new_folder(output_dir, datetime.now().strftime(RUN_TIMESTAMP_FORMAT)))
 
     def save_device(self, instance_name: str, device_name: str, config: bytes, inventory: bytes) -> Path:
-        instance_folder = self.path / safe_filename(instance_name)
-        instance_folder.mkdir(exist_ok=True)
+        instance_folder = self._instance_folders.get(instance_name)
+        if instance_folder is None:
+            instance_folder = _new_folder(self.path, safe_filename(instance_name))
+            self._instance_folders[instance_name] = instance_folder
         device_folder = _new_folder(instance_folder, safe_filename(device_name))
         (device_folder / CONFIG_FILENAME).write_bytes(config)
         (device_folder / INVENTORY_FILENAME).write_bytes(inventory)
