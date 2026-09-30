@@ -20,6 +20,10 @@ class DeviceFilter:
     types: frozenset[str] = frozenset()
     names: frozenset[str] = frozenset()
 
+    @property
+    def narrows(self) -> bool:
+        return bool(self.types or self.names)
+
     def selects(self, device: Device) -> bool:
         return (
             not device.is_catalog
@@ -76,7 +80,8 @@ def extract_instance(
     poll_interval: float,
     timeout: float,
 ) -> Iterator[Result]:
-    """Fetch and save the Config and Inventory of every Device of `instance` that `device_filter` selects, one by one.
+    """Fetch and save the Config and Inventory of every Device of `instance` that `device_filter`
+    selects, one by one.
 
     Without `fetch`, the most recent stored Config and Inventory are saved instead. `force` is
     passed to each Fetch and `timeout` bounds it, in seconds. Failures are reported as results,
@@ -84,10 +89,11 @@ def extract_instance(
     """
     client = EasyUCSClient(instance.url)
     try:
-        devices = [device for device in client.list_devices() if device_filter.selects(device)]
+        listed = client.list_devices()
     except EasyUCSError as exc:
         yield InstanceFailed(instance=instance, reason=str(exc))
         return
+    devices = [device for device in listed if device_filter.selects(device)]
     if not devices:
         yield NoDeviceSelected(instance=instance)
     for device in devices:

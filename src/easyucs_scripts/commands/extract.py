@@ -1,4 +1,4 @@
-"""`eucs extract`: save the Config and Inventory of every Device of an Instance."""
+"""`eucs extract`: save the Config and Inventory of the selected Devices of an Instance."""
 
 from enum import Enum
 from pathlib import Path
@@ -48,7 +48,7 @@ def extract(
             show_default=False,
         ),
     ] = None,
-    devices: Annotated[
+    names: Annotated[
         Optional[list[str]],
         typer.Option(
             "--device",
@@ -91,7 +91,8 @@ def extract(
     ] = False,
     poll_interval: Annotated[float, typer.Option("--poll-interval", hidden=True)] = 2.0,
 ) -> None:
-    """Fetch and save the Config and Inventory of every Device of an EasyUCS Instance."""
+    """Fetch and save the Config and Inventory of every Device of an EasyUCS Instance,
+    or only of those selected with --type and --device."""
     try:
         instance = instance_from_url(url)
     except ValueError as exc:
@@ -101,9 +102,7 @@ def extract(
     except ValueError as exc:
         raise typer.BadParameter(str(exc), param_hint="--timeout") from exc
 
-    device_types = sorted({t.value for t in types or ()})
-    device_names = sorted(set(devices or ()))
-    device_filter = DeviceFilter(types=frozenset(device_types), names=frozenset(device_names))
+    device_filter = DeviceFilter(types=frozenset(t.value for t in types or ()), names=frozenset(names or ()))
 
     run = RunFolder.create(output)
     console.print(f"Run folder: {escape(str(run.path))}")
@@ -118,12 +117,12 @@ def extract(
         timeout=timeout_seconds,
     ):
         results.append(result)
-        _print_result(result, filtered=bool(device_types or device_names))
+        _print_result(result, device_filter)
 
     parameters = {
         "urls": [instance.url],
-        "device_types": device_types,
-        "device_names": device_names,
+        "device_types": sorted(device_filter.types),
+        "device_names": sorted(device_filter.names),
         "output": str(output),
         "no_fetch": no_fetch,
         "force": force,
@@ -158,13 +157,13 @@ def _summary_table(results: list[Result]) -> Table:
     return table
 
 
-def _print_result(result: Result, *, filtered: bool) -> None:
+def _print_result(result: Result, device_filter: DeviceFilter) -> None:
     if isinstance(result, InstanceFailed):
         console.print(f"[red]FAILED[/red] {escape(result.instance.name)}: {escape(result.reason)}")
         return
     if isinstance(result, NoDeviceSelected):
         name = escape(result.instance.name)
-        if filtered:
+        if device_filter.narrows:
             console.print(f"[yellow]No Device of Instance {name} matches --type / --device[/yellow]")
         else:
             console.print(f"[yellow]Instance {name} has no Device to extract[/yellow]")

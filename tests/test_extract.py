@@ -359,6 +359,17 @@ def test_filters_matching_no_device_say_so_for_the_instance(
     assert read_summary(tmp_path)["devices"] == []
 
 
+def test_an_instance_with_only_catalog_devices_says_it_has_no_device_to_extract(
+    run_extract: RunExtract, fake_easyucs: FakeEasyUCS, tmp_path: Path
+) -> None:
+    fake_easyucs.add_device("ucsm_catalog.easyucs", "ucsm", is_system=True)
+
+    result = run_extract(fake_easyucs.url, tmp_path)
+
+    assert result.exit_code == 0, result.output
+    assert f"Instance 127.0.0.1_{fake_easyucs.port} has no Device to extract" in result.output
+
+
 def test_summary_records_run_parameters_and_the_outcome_and_files_of_every_device(
     run_extract: RunExtract, fake_easyucs: FakeEasyUCS, tmp_path: Path
 ) -> None:
