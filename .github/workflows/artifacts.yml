@@ -3,7 +3,6 @@ name: Artifacts
 on:
   push:
   workflow_dispatch:
-  workflow_call:
 
 permissions:
   contents: read
@@ -75,7 +74,7 @@ jobs:
         with:
           python-version: "3.13"
       - name: Build
-        run: python scripts/build_zipapp.py
+        run: ${{ steps.oldest.outputs.python-path }} scripts/build_zipapp.py
       - name: Smoke test with Python 3.9
         run: ${{ steps.oldest.outputs.python-path }} scripts/smoke_test.py ${{ steps.oldest.outputs.python-path }} dist/eucs.pyz
       - name: Smoke test with Python 3.13

@@ -34,7 +34,8 @@ def main(command: Sequence[str]) -> None:
 def check_version(command: Sequence[str]) -> None:
     init = (ROOT / "src" / "easyucs_scripts" / "__init__.py").read_text(encoding="utf-8")
     expected = re.search(r'^__version__ = "([^"]+)"', init, re.MULTILINE)
-    assert expected is not None
+    if expected is None:
+        raise SystemExit("__version__ not found in src/easyucs_scripts/__init__.py")
     printed = run(command, "--version").stdout.strip()
     if printed != expected.group(1):
         raise SystemExit(f"--version printed {printed!r}, expected {expected.group(1)!r}")
@@ -45,7 +46,7 @@ def check_extract(command: Sequence[str]) -> None:
         device = fake.add_device("FI-A", "ucsm")
         fake.add_device("ucsm_catalog.easyucs", "ucsm", is_system=True)
         instances_file = Path(tmp, "instances.yaml")
-        instances_file.write_text(f"instances:\n  - url: {fake.url}\n    name: lab\n")
+        instances_file.write_text(f"instances:\n  - url: {fake.url}\n    name: lab\n", encoding="utf-8")
         output = Path(tmp, "extractions")
 
         run(command, "extract", "--instances", str(instances_file), "--output", str(output), "--poll-interval", "0")
@@ -57,10 +58,12 @@ def check_extract(command: Sequence[str]) -> None:
         device_folders = [p.name for p in (run_folder / "lab").iterdir()]
         if device_folders != ["FI-A"]:
             raise SystemExit(f"expected only the FI-A Device folder, found {device_folders}")
-        if (run_folder / "lab" / "FI-A" / "config.json").read_bytes() != device.latest_config:
-            raise SystemExit("config.json is not the Config just Fetched")
-        if (run_folder / "lab" / "FI-A" / "inventory.json").read_bytes() != device.latest_inventory:
-            raise SystemExit("inventory.json is not the Inventory just Fetched")
+        for filename, fetched, artifact in (
+            ("config.json", device.latest_config, "Config"),
+            ("inventory.json", device.latest_inventory, "Inventory"),
+        ):
+            if (run_folder / "lab" / "FI-A" / filename).read_bytes() != fetched:
+                raise SystemExit(f"{filename} is not the {artifact} just Fetched")
         summary = json.loads((run_folder / "summary.json").read_text(encoding="utf-8"))
         if summary.get("succeeded") is not True:
             raise SystemExit(f"summary.json does not record a successful run: {summary}")
