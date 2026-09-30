@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterator, Optional, Sequence, Union
 
-from easyucs_scripts.client import Device, EasyUCSClient, EasyUCSError, NothingStored
+from easyucs_scripts.client import Device, EasyUCSClient, EasyUCSError, NothingStoredError
 from easyucs_scripts.instances import Instance
 
 if TYPE_CHECKING:
@@ -60,8 +60,8 @@ def extract_instance(
             config = client.download_latest_config(device)
             inventory = client.download_latest_inventory(device)
             folder = run.save_device(instance.name, device.name, config, inventory)
-        except NothingStored as exc:
-            hint = "" if fetch else "; run without --no-fetch to Fetch one"
+        except NothingStoredError as exc:
+            hint = "" if fetch else "; run without --no-fetch to Fetch it"
             yield DeviceResult(instance=instance, device=device, failure=f"{exc}{hint}")
         except EasyUCSError as exc:
             yield DeviceResult(instance=instance, device=device, failure=str(exc))

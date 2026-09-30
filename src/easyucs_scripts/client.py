@@ -20,7 +20,7 @@ class EasyUCSError(Exception):
     """An Instance could not be reached, or did not do what was asked."""
 
 
-class NothingStored(EasyUCSError):
+class NothingStoredError(EasyUCSError):
     """A Device has no stored Config or Inventory to download."""
 
 
@@ -102,7 +102,7 @@ class EasyUCSClient:
         with _expected_shape(f"GET {path}"):
             items = listing.get(collection) or []
             if not items:
-                raise NothingStored(f"Device {device.name!r} has no stored {label}")
+                raise NothingStoredError(f"Device {device.name!r} has no stored {label}")
             latest_uuid = items[0]["uuid"]
         return self._request("GET", f"/devices/{device.uuid}/{collection}/{latest_uuid}/actions/download").content
 

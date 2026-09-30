@@ -180,7 +180,7 @@ def test_no_fetch_saves_the_most_recent_stored_config_and_inventory_without_fetc
     result = run_extract(fake_easyucs.url, tmp_path / "now", "--no-fetch")
 
     assert result.exit_code == 0, result.output
-    assert (device.configs_fetched, device.inventories_fetched) == (1, 1)
+    assert len(device.fetch_forces) == 2
     device_folder = only_instance_folder(tmp_path / "now") / "fi-a"
     assert (device_folder / "config.json").read_bytes() == latest_config
     assert (device_folder / "inventory.json").read_bytes() == latest_inventory

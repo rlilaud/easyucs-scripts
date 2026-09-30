@@ -143,7 +143,9 @@ class FakeEasyUCS:
 
     # Request handling, called from the server threads.
 
-    def handle(self, method: str, path: str, query: dict[str, list[str]], body: Any = None) -> tuple[int, Any]:
+    def handle(
+        self, method: str, path: str, query: dict[str, list[str]], request_body: Any = None
+    ) -> tuple[int, Any]:
         with self._lock:
             if self.error is not None:
                 return self.error[0], {"message": self.error[1]}
@@ -158,7 +160,7 @@ class FakeEasyUCS:
 
             match = re.fullmatch(r"/devices/([^/]+)/(configs|inventories)/actions/fetch", path)
             if method == "POST" and match:
-                return self._start_fetch(match.group(1), match.group(2), body)
+                return self._start_fetch(match.group(1), match.group(2), request_body)
 
             match = re.fullmatch(r"/tasks/([^/]+)", path)
             if method == "GET" and match and match.group(1) in self._tasks:
@@ -185,11 +187,11 @@ class FakeEasyUCS:
     def _device(self, device_uuid: str) -> Optional[FakeDevice]:
         return next((d for d in self.devices if d.uuid == device_uuid), None)
 
-    def _start_fetch(self, device_uuid: str, collection: str, body: Any) -> tuple[int, Any]:
+    def _start_fetch(self, device_uuid: str, collection: str, request_body: Any) -> tuple[int, Any]:
         device = self._device(device_uuid)
         if device is None:
             return 404, {"message": "Device not found"}
-        device.fetch_forces.append(body.get("force") if isinstance(body, dict) else None)
+        device.fetch_forces.append(request_body.get("force") if isinstance(request_body, dict) else None)
         if device.is_system:
             return 500, {"message": "Catalog Devices cannot be fetched"}
         if device.fetch_error is not None:
