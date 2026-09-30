@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterator, Optional, Sequence, Union
+from typing import TYPE_CHECKING, Callable, Optional, Sequence, Union
 
 from easyucs_scripts.client import Device, EasyUCSClient, EasyUCSError, NothingStoredError
 from easyucs_scripts.instances import Instance
@@ -70,8 +72,41 @@ class NoDeviceSelected:
 Result = Union[DeviceResult, InstanceFailed, NoDeviceSelected]
 
 
-def extract_instance(
-    instance: Instance,
+@dataclass(frozen=True)
+class DevicesSelected:
+    """The Devices of the Instance that will be extracted, reported before any of them starts."""
+
+    instance: Instance
+    devices: tuple[Device, ...]
+
+
+@dataclass(frozen=True)
+class DeviceProgress:
+    """A Device's Extraction reached `step`, with `percent` of it done if known."""
+
+    instance: Instance
+    device: Device
+    step: str
+    percent: Optional[float] = None
+
+
+Event = Union[DevicesSelected, DeviceProgress, DeviceResult, InstanceFailed, NoDeviceSelected]
+
+
+@dataclass(frozen=True)
+class _Options:
+    run: RunFolder
+    device_filter: DeviceFilter
+    fetch: bool
+    force: bool
+    poll_interval: float
+    timeout: float
+    workers: int
+    report: Callable[[Event], None]
+
+
+def extract_instances(
+    instances: Sequence[Instance],
     run: RunFolder,
     *,
     device_filter: DeviceFilter,
@@ -79,39 +114,77 @@ def extract_instance(
     force: bool,
     poll_interval: float,
     timeout: float,
-) -> Iterator[Result]:
-    """Fetch and save the Config and Inventory of every Device of `instance` that `device_filter`
-    selects, one by one.
+    workers: int,
+    on_event: Callable[[Event], None],
+) -> list[Result]:
+    """Fetch and save the Config and Inventory of every Device that `device_filter` selects in
+    each of `instances`.
 
-    Without `fetch`, the most recent stored Config and Inventory are saved instead. `force` is
-    passed to each Fetch and `timeout` bounds it, in seconds. Failures are reported as results,
-    never raised.
+    All Instances are processed at once, each with at most `workers` Devices in flight. Without
+    `fetch`, the most recent stored Config and Inventory are saved instead. `force` is passed to
+    each Fetch and `timeout` bounds it, in seconds. Failures are reported as results, never raised.
+
+    `on_event` is called from worker threads, one call at a time, as the Extraction advances.
+    The results are returned in the order of `instances`, then of the Devices each Instance lists.
     """
+    lock = threading.Lock()
+
+    def report(event: Event) -> None:
+        with lock:
+            on_event(event)
+
+    options = _Options(run, device_filter, fetch, force, poll_interval, timeout, workers, report)
+    with ThreadPoolExecutor(max_workers=max(len(instances), 1)) as pool:
+        per_instance = list(pool.map(lambda instance: _extract_instance(instance, options), instances))
+    return [result for results in per_instance for result in results]
+
+
+def _extract_instance(instance: Instance, options: _Options) -> list[Result]:
     client = EasyUCSClient(instance.url)
     try:
         listed = client.list_devices()
     except EasyUCSError as exc:
-        yield InstanceFailed(instance=instance, reason=str(exc))
-        return
-    devices = [device for device in listed if device_filter.selects(device)]
+        failed = InstanceFailed(instance=instance, reason=str(exc))
+        options.report(failed)
+        return [failed]
+    devices = tuple(device for device in listed if options.device_filter.selects(device))
     if not devices:
-        yield NoDeviceSelected(instance=instance)
-    for device in devices:
-        try:
-            if fetch:
-                client.fetch(device, force=force, poll_interval=poll_interval, timeout=timeout)
-            config = client.download_latest_config(device)
-            inventory = client.download_latest_inventory(device)
-            folder = run.save_device(instance.name, device.name, config, inventory)
-        except NothingStoredError as exc:
-            hint = "" if fetch else "; run without --no-fetch to Fetch it"
-            yield DeviceResult(instance=instance, device=device, failure=f"{exc}{hint}")
-        except EasyUCSError as exc:
-            yield DeviceResult(instance=instance, device=device, failure=str(exc))
-        except OSError as exc:
-            yield DeviceResult(instance=instance, device=device, failure=f"Could not save files: {exc}")
-        else:
-            yield DeviceResult(instance=instance, device=device, folder=folder)
+        nothing = NoDeviceSelected(instance=instance)
+        options.report(nothing)
+        return [nothing]
+    options.report(DevicesSelected(instance=instance, devices=devices))
+    with ThreadPoolExecutor(max_workers=options.workers) as pool:
+        return list(pool.map(lambda device: _extract_device(client, instance, device, options), devices))
+
+
+def _extract_device(client: EasyUCSClient, instance: Instance, device: Device, options: _Options) -> DeviceResult:
+    def progress(step: str, percent: Optional[float] = None) -> None:
+        options.report(DeviceProgress(instance=instance, device=device, step=step, percent=percent))
+
+    try:
+        if options.fetch:
+            client.fetch(
+                device,
+                force=options.force,
+                poll_interval=options.poll_interval,
+                timeout=options.timeout,
+                on_progress=progress,
+            )
+        progress("Downloading")
+        config = client.download_latest_config(device)
+        inventory = client.download_latest_inventory(device)
+        folder = options.run.save_device(instance.name, device.name, config, inventory)
+    except NothingStoredError as exc:
+        hint = "" if options.fetch else "; run without --no-fetch to Fetch it"
+        result = DeviceResult(instance=instance, device=device, failure=f"{exc}{hint}")
+    except EasyUCSError as exc:
+        result = DeviceResult(instance=instance, device=device, failure=str(exc))
+    except OSError as exc:
+        result = DeviceResult(instance=instance, device=device, failure=f"Could not save files: {exc}")
+    else:
+        result = DeviceResult(instance=instance, device=device, folder=folder)
+    options.report(result)
+    return result
 
 
 def all_succeeded(results: Sequence[Result]) -> bool:

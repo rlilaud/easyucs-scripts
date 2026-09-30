@@ -38,22 +38,27 @@ def safe_filename(name: str) -> str:
 
 
 class RunFolder:
-    """One run's output folder. Each run gets a new folder; nothing is ever overwritten."""
+    """One run's output folder. Each run gets a new folder; nothing is ever overwritten.
 
-    def __init__(self, path: Path) -> None:
+    Devices may be saved from several threads at once.
+    """
+
+    def __init__(self, path: Path, instance_names: Sequence[str]) -> None:
         self.path = path
-        self._instance_folders: dict[str, Path] = {}
+        self._instance_folders = _distinct_folders(path, instance_names)
 
     @classmethod
-    def create(cls, output_dir: Path) -> RunFolder:
+    def create(cls, output_dir: Path, instance_names: Sequence[str]) -> RunFolder:
+        """Create a new run folder for the Instances named `instance_names`, which are unique.
+
+        Instances whose safe names clash get distinct folders, suffixed in the order given.
+        """
         output_dir.mkdir(parents=True, exist_ok=True)
-        return cls(_new_folder(output_dir, datetime.now().strftime(RUN_TIMESTAMP_FORMAT)))
+        return cls(_new_folder(output_dir, datetime.now().strftime(RUN_TIMESTAMP_FORMAT)), instance_names)
 
     def save_device(self, instance_name: str, device_name: str, config: bytes, inventory: bytes) -> Path:
-        instance_folder = self._instance_folders.get(instance_name)
-        if instance_folder is None:
-            instance_folder = _new_folder(self.path, safe_filename(instance_name))
-            self._instance_folders[instance_name] = instance_folder
+        instance_folder = self._instance_folders[instance_name]
+        instance_folder.mkdir(exist_ok=True)
         device_folder = _new_folder(instance_folder, safe_filename(device_name))
         (device_folder / CONFIG_FILENAME).write_bytes(config)
         (device_folder / INVENTORY_FILENAME).write_bytes(inventory)
@@ -101,6 +106,22 @@ class RunFolder:
     def _relative_path(self, path: Path) -> str:
         """`path` relative to the run folder, with `/` separators on every OS."""
         return path.relative_to(self.path).as_posix()
+
+
+def _distinct_folders(parent: Path, names: Sequence[str]) -> dict[str, Path]:
+    """Map each of `names` to a folder of `parent` named after it, suffixed `_2`, `_3`... when
+    its safe name is taken (case-insensitively, as on Windows)."""
+    taken: set[str] = set()
+    folders = {}
+    for name in names:
+        base = candidate = safe_filename(name)
+        attempt = 1
+        while candidate.casefold() in taken:
+            attempt += 1
+            candidate = f"{base}_{attempt}"
+        taken.add(candidate.casefold())
+        folders[name] = parent / candidate
+    return folders
 
 
 def _new_folder(parent: Path, name: str) -> Path:

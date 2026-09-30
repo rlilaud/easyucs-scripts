@@ -7,16 +7,21 @@ from typing import Annotated, Optional
 import typer
 from rich.console import Console
 from rich.markup import escape
+from rich.progress import BarColumn, Progress, TaskID, TaskProgressColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
 from easyucs_scripts.durations import parse_duration
 from easyucs_scripts.extraction import (
     DeviceFilter,
+    DeviceProgress,
+    DeviceResult,
+    DevicesSelected,
+    Event,
     InstanceFailed,
     NoDeviceSelected,
     Result,
     all_succeeded,
-    extract_instance,
+    extract_instances,
 )
 from easyucs_scripts.instances import InstanceDefinitionError, resolve_instances
 from easyucs_scripts.output import RunFolder
@@ -101,6 +106,15 @@ def extract(
             ),
         ),
     ] = False,
+    workers: Annotated[
+        int,
+        typer.Option(
+            "--workers",
+            min=1,
+            help="Maximum number of Devices extracted at the same time in each Instance (default: 4).",
+            show_default=False,
+        ),
+    ] = 4,
     poll_interval: Annotated[float, typer.Option("--poll-interval", hidden=True)] = 2.0,
 ) -> None:
     """Fetch and save the Config and Inventory of every Device of the given EasyUCS Instances,
@@ -118,21 +132,20 @@ def extract(
 
     device_filter = DeviceFilter(types=frozenset(t.value for t in types or ()), names=frozenset(names or ()))
 
-    run = RunFolder.create(output)
+    run = RunFolder.create(output, [instance.name for instance in instances])
     console.print(f"Run folder: {escape(str(run.path))}")
-    results: list[Result] = []
-    for instance in instances:
-        for result in extract_instance(
-            instance,
+    with _progress_bars() as progress:
+        results = extract_instances(
+            instances,
             run,
             device_filter=device_filter,
             fetch=not no_fetch,
             force=force,
             poll_interval=poll_interval,
             timeout=timeout_seconds,
-        ):
-            results.append(result)
-            _print_result(result, device_filter)
+            workers=workers,
+            on_event=_ProgressDisplay(progress, device_filter),
+        )
 
     parameters = {
         "instances_file": None if instances_file is None else str(instances_file),
@@ -143,6 +156,7 @@ def extract(
         "no_fetch": no_fetch,
         "force": force,
         "timeout_seconds": timeout_seconds,
+        "workers": workers,
     }
     summary_path = run.write_summary(parameters, instances, results)
     console.print(_summary_table(results))
@@ -173,19 +187,47 @@ def _summary_table(results: list[Result]) -> Table:
     return table
 
 
-def _print_result(result: Result, device_filter: DeviceFilter) -> None:
-    if isinstance(result, InstanceFailed):
-        console.print(f"[red]FAILED[/red] {escape(result.instance.name)}: {escape(result.reason)}")
-        return
-    if isinstance(result, NoDeviceSelected):
-        name = escape(result.instance.name)
-        if device_filter.narrows:
-            console.print(f"[yellow]No Device of Instance {name} matches --type / --device[/yellow]")
+def _progress_bars() -> Progress:
+    return Progress(
+        TextColumn("{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeElapsedColumn(),
+        TextColumn("{task.fields[status]}"),
+        console=console,
+    )
+
+
+class _ProgressDisplay:
+    """Renders the Extraction's events as one progress bar per Device."""
+
+    def __init__(self, progress: Progress, device_filter: DeviceFilter) -> None:
+        self._progress = progress
+        self._device_filter = device_filter
+        self._bars: dict[tuple[str, str], TaskID] = {}
+
+    def __call__(self, event: Event) -> None:
+        if isinstance(event, DevicesSelected):
+            for device in event.devices:
+                label = f"{escape(event.instance.name)} / {escape(device.name)} ({escape(device.type)})"
+                self._bars[event.instance.name, device.uuid] = self._progress.add_task(
+                    label, total=100, status="waiting"
+                )
+        elif isinstance(event, DeviceProgress):
+            bar = self._bars[event.instance.name, event.device.uuid]
+            self._progress.update(bar, completed=event.percent, status=escape(event.step))
+        elif isinstance(event, DeviceResult):
+            bar = self._bars[event.instance.name, event.device.uuid]
+            if event.succeeded:
+                self._progress.update(bar, completed=100, status="[green]succeeded[/green]")
+            else:
+                self._progress.update(bar, status="[red]failed[/red]")
+            self._progress.stop_task(bar)
+        elif isinstance(event, InstanceFailed):
+            console.print(f"[red]FAILED[/red] {escape(event.instance.name)}: {escape(event.reason)}")
         else:
-            console.print(f"[yellow]Instance {name} has no Device to extract[/yellow]")
-        return
-    label = f"{escape(result.instance.name)} / {escape(result.device.name)} ({escape(result.device.type)})"
-    if result.succeeded:
-        console.print(f"[green]OK[/green] {label} saved to {escape(str(result.folder))}")
-    else:
-        console.print(f"[red]FAILED[/red] {label}: {escape(str(result.failure))}")
+            name = escape(event.instance.name)
+            if self._device_filter.narrows:
+                console.print(f"[yellow]No Device of Instance {name} matches --type / --device[/yellow]")
+            else:
+                console.print(f"[yellow]Instance {name} has no Device to extract[/yellow]")

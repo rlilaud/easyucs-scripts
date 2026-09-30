@@ -5,11 +5,13 @@ from __future__ import annotations
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator, Optional
 
 import requests
 
 from easyucs_scripts.durations import format_duration
+
+ProgressCallback = Callable[[str, float], None]
 
 API_PATH = "/api/v1"
 REQUEST_TIMEOUT_SECONDS = 60
@@ -52,31 +54,58 @@ class EasyUCSClient:
                 for device in payload["devices"]
             ]
 
-    def fetch(self, device: Device, *, force: bool, poll_interval: float, timeout: float) -> None:
+    def fetch(
+        self,
+        device: Device,
+        *,
+        force: bool,
+        poll_interval: float,
+        timeout: float,
+        on_progress: Optional[ProgressCallback] = None,
+    ) -> None:
         """Fetch a fresh Config and Inventory of `device`, and wait until the Instance has stored them.
 
         With `force`, EasyUCS carries on past failed SDK objects or Intersight license validation,
         so the Config may be incomplete. Raises EasyUCSError if both are not stored within `timeout` seconds.
+        `on_progress` is called with the current step and the percentage of the whole Fetch done,
+        as EasyUCS reports it.
         """
         deadline = time.monotonic() + timeout
         # The combined `fetch_config_and_inventory` action is refused for some device types
         # (Intersight: "Unsupported device type"), so Config and Inventory are fetched separately.
-        for collection, label in (("configs", "Config"), ("inventories", "Inventory")):
+        steps = (("configs", "Config"), ("inventories", "Inventory"))
+        for index, (collection, label) in enumerate(steps):
             path = f"/devices/{device.uuid}/{collection}/actions/fetch"
             response = self._request("POST", path, json={"force": force})
             with _expected_shape(f"POST {path}"):
                 task_uuid = _json(response)["task"]
-            description = f"{label} Fetch of Device {device.name!r}"
-            self._wait_for_task(task_uuid, description, poll_interval, deadline, timeout)
+            step = f"{label} Fetch"
+
+            def report(task_progress: float, step: str = step, index: int = index) -> None:
+                if on_progress is not None:
+                    on_progress(step, (index * 100 + task_progress) / len(steps))
+
+            report(0)
+            description = f"{step} of Device {device.name!r}"
+            self._wait_for_task(task_uuid, description, poll_interval, deadline, timeout, report)
 
     def _wait_for_task(
-        self, task_uuid: str, description: str, poll_interval: float, deadline: float, timeout: float
+        self,
+        task_uuid: str,
+        description: str,
+        poll_interval: float,
+        deadline: float,
+        timeout: float,
+        on_progress: Callable[[float], None],
     ) -> None:
         while True:
             payload = self._get_json(f"/tasks/{task_uuid}")
             with _expected_shape(f"GET /tasks/{task_uuid}"):
                 task = payload["task"]
                 status = task.get("status")
+            progress = task.get("progress")
+            if isinstance(progress, (int, float)) and not isinstance(progress, bool):
+                on_progress(min(max(float(progress), 0.0), 100.0))
             if status == "successful":
                 return
             if status not in _UNFINISHED_TASK_STATUSES:

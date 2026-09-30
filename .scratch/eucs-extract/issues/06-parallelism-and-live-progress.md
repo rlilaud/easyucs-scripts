@@ -8,9 +8,9 @@ See the parent spec: `.scratch/eucs-extract/spec.md`.
 
 **Status:** ready-for-agent
 
-- [ ] Instances are processed in parallel.
-- [ ] `--workers` (default 4) bounds concurrent Devices per Instance.
-- [ ] One Rich progress bar per Device, updated from the task's `progress` field, ending in a visible success or failure state.
-- [ ] The orchestration reports progress events and outcomes without rendering; rendering lives in the `extract` subcommand.
-- [ ] Summary, `summary.json` and exit code behave exactly as in 02 under parallel execution.
-- [ ] Tests (CLI against the fake EasyUCS) cover: the fake server records peak concurrent Fetches per Instance and it never exceeds `--workers`; two Instances progress simultaneously; one failing Device or Instance doesn't affect the others' outputs.
+- [x] Instances are processed in parallel.
+- [x] `--workers` (default 4) bounds concurrent Devices per Instance.
+- [x] One Rich progress bar per Device, updated from the task's `progress` field, ending in a visible success or failure state.
+- [x] The orchestration reports progress events and outcomes without rendering; rendering lives in the `extract` subcommand.
+- [x] Summary, `summary.json` and exit code behave exactly as in 02 under parallel execution.
+- [x] Tests (CLI against the fake EasyUCS) cover: the fake server records peak concurrent Fetches per Instance and it never exceeds `--workers`; two Instances progress simultaneously; one failing Device or Instance doesn't affect the others' outputs.
