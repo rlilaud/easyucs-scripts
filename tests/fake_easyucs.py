@@ -7,7 +7,8 @@ otherwise. A Fetch task reports `pending`, then `in_progress`, then the Device's
 so tests can tell fresh artifacts from stale ones. Each Device records the `force` value of
 every Fetch request it receives. Setting `FakeEasyUCS.error` makes every request fail, and
 `FakeEasyUCS.devices_response` replaces the body of the Device listing. Given an SSL context,
-the fake serves HTTPS instead of HTTP.
+the fake serves HTTPS instead of HTTP. The `Authorization` header of every request that carries
+one is recorded in `authorization_headers`.
 
 A Device's Fetch lasts from its Config Fetch request until its Inventory task ends, or until
 any of its tasks fails. Setting `FakeEasyUCS.task_seconds` keeps every task `in_progress` for at
@@ -90,6 +91,7 @@ class FakeEasyUCS:
         self.devices_response: Optional[Any] = None
         self.task_seconds = 0.0
         self.peak_concurrent_fetches = 0
+        self.authorization_headers: list[str] = []
         self._fetching: set[str] = set()
         self._tasks: dict[str, _FetchTask] = {}
         self._clock = itertools.count(1)
@@ -166,9 +168,16 @@ class FakeEasyUCS:
     # Request handling, called from the server threads.
 
     def handle(
-        self, method: str, path: str, query: dict[str, list[str]], request_body: Any = None
+        self,
+        method: str,
+        path: str,
+        query: dict[str, list[str]],
+        request_body: Any = None,
+        authorization: Optional[str] = None,
     ) -> tuple[int, Any]:
         with self._lock:
+            if authorization is not None:
+                self.authorization_headers.append(authorization)
             if self.error is not None:
                 return self.error[0], {"message": self.error[1]}
             if not path.startswith(API_PREFIX + "/"):
@@ -301,7 +310,9 @@ def _handler_for(fake: FakeEasyUCS) -> type[BaseHTTPRequestHandler]:
 
         def _dispatch(self, method: str, request_body: Any = None) -> None:
             parts = urlsplit(self.path)
-            status, body = fake.handle(method, parts.path, parse_qs(parts.query), request_body)
+            status, body = fake.handle(
+                method, parts.path, parse_qs(parts.query), request_body, self.headers.get("Authorization")
+            )
             payload = body if isinstance(body, bytes) else json.dumps(body).encode()
             self.send_response(status)
             self.send_header("Content-Type", "application/octet-stream" if isinstance(body, bytes) else "application/json")

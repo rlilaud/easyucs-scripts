@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -13,6 +14,8 @@ from easyucs_scripts.instances import Instance
 
 if TYPE_CHECKING:
     from easyucs_scripts.output import RunFolder
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -145,6 +148,7 @@ def _extract_instance(instance: Instance, options: _Options) -> list[Result]:
         listed = client.list_devices()
     except EasyUCSError as exc:
         failed = InstanceFailed(instance=instance, reason=str(exc))
+        log.error("Instance %r failed: %s", instance.name, failed.reason)
         options.report(failed)
         return [failed]
     devices = tuple(device for device in listed if options.device_filter.selects(device))
@@ -152,6 +156,7 @@ def _extract_instance(instance: Instance, options: _Options) -> list[Result]:
         nothing = NoDeviceSelected(instance=instance)
         options.report(nothing)
         return [nothing]
+    log.info("Instance %r: extracting %s", instance.name, ", ".join(repr(device.name) for device in devices))
     options.report(DevicesSelected(instance=instance, devices=devices))
     folders = options.run.device_folders(instance.name, [device.name for device in devices])
     with ThreadPoolExecutor(max_workers=options.workers) as pool:
@@ -190,9 +195,17 @@ def _extract_device(
         result = DeviceResult(instance=instance, device=device, failure=f"Could not save files: {exc}")
     else:
         result = DeviceResult(instance=instance, device=device, folder=folder)
+    if result.failure is None:
+        log.info("%s succeeded, saved in %s", _label(instance, device), folder)
+    else:
+        log.error("%s failed: %s", _label(instance, device), result.failure)
     options.report(result)
     return result
 
 
 def all_succeeded(results: Sequence[Result]) -> bool:
     return all(r.succeeded for r in results)
+
+
+def _label(instance: Instance, device: Device) -> str:
+    return f"Instance {instance.name!r} / Device {device.name!r} ({device.type})"

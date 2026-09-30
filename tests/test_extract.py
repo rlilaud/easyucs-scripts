@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import json
 import re
+import secrets
 import socket
 from pathlib import Path
 from typing import Any
 
+import pytest
 import trustme
 from conftest import RunEucs, RunExtract, RunExtractFrom
 from fake_easyucs import FakeDevice, FakeEasyUCS
+from requests import PreparedRequest
+
+from easyucs_scripts.client import EasyUCSClient
 
 
 def only_child(folder: Path) -> Path:
@@ -64,7 +69,7 @@ def test_output_is_laid_out_as_run_timestamp_then_instance_then_device(
     run_folder = only_child(tmp_path)
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}", run_folder.name)
     instance_name = f"127.0.0.1_{fake_easyucs.port}"
-    assert sorted(p.name for p in run_folder.iterdir()) == sorted([instance_name, "summary.json"])
+    assert sorted(p.name for p in run_folder.iterdir()) == sorted([instance_name, "run.log", "summary.json"])
     instance_folder = run_folder / instance_name
     device_folder = only_child(instance_folder)
     assert device_folder.name == "fi-a"
@@ -527,7 +532,7 @@ def test_extracts_every_instance_listed_in_an_instances_file(
 
     assert result.exit_code == 0, result.output
     run_folder = only_child(tmp_path / "out")
-    assert sorted(p.name for p in run_folder.iterdir()) == ["lyon", "paris", "summary.json"]
+    assert sorted(p.name for p in run_folder.iterdir()) == ["lyon", "paris", "run.log", "summary.json"]
     assert_saved(run_folder / "paris", fi_a)
     assert_saved(run_folder / "lyon", central)
     summary = json.loads((run_folder / "summary.json").read_text(encoding="utf-8"))
@@ -858,3 +863,86 @@ def test_a_missing_ca_bundle_file_is_rejected_before_any_extraction(
     assert "missing-ca.pem" in result.output
     assert device.fetch_forces == []
     assert not (tmp_path / "out").exists()
+
+
+def read_run_log(output: Path) -> str:
+    return (only_child(output) / "run.log").read_text(encoding="utf-8")
+
+
+def test_the_run_log_records_why_a_device_failed(
+    run_extract: RunExtract, fake_easyucs: FakeEasyUCS, tmp_path: Path
+) -> None:
+    fake_easyucs.add_device("fi-a", "ucsm", task_outcome="failed", task_message="Unable to connect to fi-a")
+    fake_easyucs.add_device("rack-01", "cimc")
+
+    result = run_extract(fake_easyucs.url, tmp_path)
+
+    assert result.exit_code == 1
+    log = read_run_log(tmp_path)
+    assert re.search(r"fi-a.*Unable to connect to fi-a", log)
+
+
+def test_the_run_log_records_requests_with_their_http_status_and_task_status_changes(
+    run_extract: RunExtract, fake_easyucs: FakeEasyUCS, tmp_path: Path
+) -> None:
+    device = fake_easyucs.add_device("fi-a", "ucsm")
+
+    result = run_extract(fake_easyucs.url, tmp_path)
+
+    assert result.exit_code == 0, result.output
+    log = read_run_log(tmp_path)
+    assert re.search(rf"GET {fake_easyucs.url}/api/v1/devices .*HTTP 200", log)
+    assert re.search(rf"POST {fake_easyucs.url}/api/v1/devices/{device.uuid}/configs/actions/fetch .*HTTP 200", log)
+    config_fetch = [line for line in log.splitlines() if "Config Fetch" in line and "'fi-a'" in line]
+    for status in ("pending", "in_progress", "successful"):
+        assert any(status in line for line in config_fetch), config_fetch
+
+
+def test_verbose_also_shows_the_run_log_on_the_console(
+    run_extract: RunExtract, fake_easyucs: FakeEasyUCS, tmp_path: Path
+) -> None:
+    fake_easyucs.add_device("fi-a", "ucsm")
+    request_detail = f"GET {fake_easyucs.url}/api/v1/devices"
+
+    normal = run_extract(fake_easyucs.url, tmp_path / "normal")
+    verbose = run_extract(fake_easyucs.url, tmp_path / "verbose", "--verbose")
+    short = run_extract(fake_easyucs.url, tmp_path / "short", "-v")
+
+    for result in (normal, verbose, short):
+        assert result.exit_code == 0, result.output
+    assert request_detail in read_run_log(tmp_path / "normal")
+    assert request_detail not in normal.output
+    assert request_detail in verbose.output
+    assert request_detail in short.output
+
+
+def test_authentication_headers_never_reach_the_run_log_or_the_console(
+    run_extract: RunExtract, fake_easyucs: FakeEasyUCS, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_easyucs.add_device("fi-a", "ucsm")
+    fake_easyucs.add_device("rack-01", "cimc", task_outcome="failed", task_message="Unable to connect")
+    fake_easyucs.add_device("LabDC", "intersight", fetch_error="Unsupported device type")
+    token = secrets.token_urlsafe(24)
+
+    def authenticate(self: EasyUCSClient, request: PreparedRequest) -> PreparedRequest:
+        request.headers["Authorization"] = f"Bearer {token}"
+        return request
+
+    monkeypatch.setattr(EasyUCSClient, "authenticate", authenticate)
+
+    result = run_extract(fake_easyucs.url, tmp_path, "--verbose")
+
+    assert result.exit_code == 1
+    assert fake_easyucs.authorization_headers
+    assert set(fake_easyucs.authorization_headers) == {f"Bearer {token}"}
+    assert token not in read_run_log(tmp_path)
+    assert token not in result.output
+
+
+def test_the_run_log_records_why_an_instance_failed(run_extract: RunExtract, tmp_path: Path) -> None:
+    url = f"http://127.0.0.1:{closed_port()}"
+
+    result = run_extract(url, tmp_path)
+
+    assert result.exit_code == 1
+    assert re.search(rf"127\.0\.0\.1_\d+.*GET {url}/api/v1/devices failed", read_run_log(tmp_path))

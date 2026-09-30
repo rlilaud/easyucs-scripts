@@ -1,4 +1,4 @@
-"""Output writer: the timestamped run folder, the Instance / Device tree inside it, and the run summary."""
+"""Output writer: the timestamped run folder, the Instance / Device tree inside it, the run summary and the run log."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ RUN_TIMESTAMP_FORMAT = "%Y-%m-%d_%H-%M-%S"
 CONFIG_FILENAME = "config.json"
 INVENTORY_FILENAME = "inventory.json"
 SUMMARY_FILENAME = "summary.json"
+RUN_LOG_FILENAME = "run.log"
 
 _WINDOWS_INVALID_CHARACTERS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _WINDOWS_RESERVED_NAMES = {
@@ -55,6 +56,11 @@ class RunFolder:
         """
         output_dir.mkdir(parents=True, exist_ok=True)
         return cls(_new_folder(output_dir, datetime.now().strftime(RUN_TIMESTAMP_FORMAT)), instance_names)
+
+    @property
+    def log_path(self) -> Path:
+        """Where the run log of the run is written."""
+        return self.path / RUN_LOG_FILENAME
 
     def device_folders(self, instance_name: str, device_names: Sequence[str]) -> list[Path]:
         """The folders in which to save the Devices named `device_names` of an Instance, in the
