@@ -19,7 +19,7 @@ _FILE_FORMAT = "%(asctime)s %(levelname)-7s %(message)s"
 
 
 @contextmanager
-def run_log(path: Path, console: Optional[Console] = None) -> Iterator[None]:
+def run_log(path: Path, console: Optional[Console]) -> Iterator[None]:
     """Record everything the package logs to `path`, and to `console` if given, until the block ends."""
     file_handler = logging.FileHandler(path, encoding="utf-8")
     file_handler.setFormatter(logging.Formatter(_FILE_FORMAT))

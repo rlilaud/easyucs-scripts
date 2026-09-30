@@ -165,21 +165,30 @@ def extract(
     }
     run = RunFolder.create(output, [instance.name for instance in instances])
     console.print(f"Run folder: {escape(str(run.path))}")
-    with run_log(run.log_path, console if verbose else None), _progress_bars() as progress:
+    with run_log(run.log_path, console if verbose else None):
         log.info("eucs %s extract, parameters: %s", __version__, parameters)
-        results = extract_instances(
-            instances,
-            run,
-            device_filter=device_filter,
-            fetch=not no_fetch,
-            force=force,
-            poll_interval=poll_interval,
-            timeout=timeout_seconds,
-            workers=workers,
-            on_event=_ProgressDisplay(progress, device_filter),
-        )
+        for instance in instances:
+            if not instance.verify_tls:
+                log.warning("TLS certificate verification is disabled for Instance %r", instance.name)
+        try:
+            with _progress_bars() as progress:
+                results = extract_instances(
+                    instances,
+                    run,
+                    device_filter=device_filter,
+                    fetch=not no_fetch,
+                    force=force,
+                    poll_interval=poll_interval,
+                    timeout=timeout_seconds,
+                    workers=workers,
+                    on_event=_ProgressDisplay(progress, device_filter),
+                )
+            summary_path = run.write_summary(parameters, instances, results)
+        except Exception:
+            log.exception("The run stopped on an unexpected error")
+            raise
+        log.info("Run %s", "succeeded" if all_succeeded(results) else "failed")
 
-    summary_path = run.write_summary(parameters, instances, results)
     console.print(_summary_table(results))
     console.print(f"Summary: {escape(str(summary_path))}")
     if not all_succeeded(results):

@@ -196,9 +196,9 @@ def _extract_device(
     else:
         result = DeviceResult(instance=instance, device=device, folder=folder)
     if result.failure is None:
-        log.info("%s succeeded, saved in %s", _label(instance, device), folder)
+        log.info("%s succeeded, saved in %s", _device_label(instance, device), folder)
     else:
-        log.error("%s failed: %s", _label(instance, device), result.failure)
+        log.error("%s failed: %s", _device_label(instance, device), result.failure)
     options.report(result)
     return result
 
@@ -207,5 +207,5 @@ def all_succeeded(results: Sequence[Result]) -> bool:
     return all(r.succeeded for r in results)
 
 
-def _label(instance: Instance, device: Device) -> str:
+def _device_label(instance: Instance, device: Device) -> str:
     return f"Instance {instance.name!r} / Device {device.name!r} ({device.type})"

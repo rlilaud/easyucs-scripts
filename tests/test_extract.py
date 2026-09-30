@@ -845,6 +845,7 @@ def test_disabling_tls_verification_for_an_instance_extracts_it_with_a_warning_n
     warnings = [line for line in result.output.splitlines() if "WARNING" in line]
     assert len(warnings) == 1
     assert "TLS" in warnings[0] and "'lab'" in warnings[0]
+    assert re.search(r"WARNING.*TLS.*'lab'", read_run_log(tmp_path / "out"))
 
 
 def test_a_missing_ca_bundle_file_is_rejected_before_any_extraction(
