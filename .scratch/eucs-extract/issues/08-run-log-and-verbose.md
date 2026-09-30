@@ -8,8 +8,8 @@ See the parent spec: `.scratch/eucs-extract/spec.md`.
 
 **Status:** ready-for-agent
 
-- [ ] `run.log` is written in the run folder for every run, including failed ones.
-- [ ] It records requested endpoints and HTTP statuses, task status transitions, and full error details for failed Devices and Instances.
-- [ ] Without `-v` the console shows only progress, warnings and the summary; with `-v/--verbose` it also shows the detailed log.
-- [ ] Authentication headers and any secret values are never written to the log or console.
-- [ ] Tests (CLI against the fake EasyUCS) cover: `run.log` exists and mentions a failed Device's reason; verbose output contains detail absent from normal output; a request carrying an `Authorization` header (injected by the test through the client's auth hook) never shows the header value in `run.log` or console.
+- [x] `run.log` is written in the run folder for every run, including failed ones.
+- [x] It records requested endpoints and HTTP statuses, task status transitions, and full error details for failed Devices and Instances.
+- [x] Without `-v` the console shows only progress, warnings and the summary; with `-v/--verbose` it also shows the detailed log.
+- [x] Authentication headers and any secret values are never written to the log or console.
+- [x] Tests (CLI against the fake EasyUCS) cover: `run.log` exists and mentions a failed Device's reason; verbose output contains detail absent from normal output; a request carrying an `Authorization` header (injected by the test through the client's auth hook) never shows the header value in `run.log` or console.

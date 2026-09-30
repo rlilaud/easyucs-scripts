@@ -1,5 +1,6 @@
 """`eucs extract`: save the Config and Inventory of the selected Devices of one or more Instances."""
 
+import logging
 from enum import Enum
 from pathlib import Path
 from typing import Annotated, Optional
@@ -10,6 +11,7 @@ from rich.markup import escape
 from rich.progress import BarColumn, Progress, TaskID, TaskProgressColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
+from easyucs_scripts import __version__
 from easyucs_scripts.durations import parse_duration
 from easyucs_scripts.extraction import (
     DeviceFilter,
@@ -25,8 +27,10 @@ from easyucs_scripts.extraction import (
 )
 from easyucs_scripts.instances import InstanceDefinitionError, resolve_instances
 from easyucs_scripts.output import RunFolder
+from easyucs_scripts.run_log import run_log
 
 console = Console(soft_wrap=True)
+log = logging.getLogger(__name__)
 
 
 class DeviceType(str, Enum):
@@ -115,6 +119,14 @@ def extract(
             show_default=False,
         ),
     ] = 4,
+    verbose: Annotated[
+        bool,
+        typer.Option(
+            "--verbose",
+            "-v",
+            help="Also show on the console the detailed log written to run.log in the run folder.",
+        ),
+    ] = False,
     poll_interval: Annotated[float, typer.Option("--poll-interval", hidden=True)] = 2.0,
 ) -> None:
     """Fetch and save the Config and Inventory of every Device of the given EasyUCS Instances,
@@ -140,21 +152,6 @@ def extract(
                 " Prefer 'ca_bundle' to trust an internal CA."
             )
 
-    run = RunFolder.create(output, [instance.name for instance in instances])
-    console.print(f"Run folder: {escape(str(run.path))}")
-    with _progress_bars() as progress:
-        results = extract_instances(
-            instances,
-            run,
-            device_filter=device_filter,
-            fetch=not no_fetch,
-            force=force,
-            poll_interval=poll_interval,
-            timeout=timeout_seconds,
-            workers=workers,
-            on_event=_ProgressDisplay(progress, device_filter),
-        )
-
     parameters = {
         "instances_file": None if instances_file is None else str(instances_file),
         "urls": list(urls or []),
@@ -166,7 +163,32 @@ def extract(
         "timeout_seconds": timeout_seconds,
         "workers": workers,
     }
-    summary_path = run.write_summary(parameters, instances, results)
+    run = RunFolder.create(output, [instance.name for instance in instances])
+    console.print(f"Run folder: {escape(str(run.path))}")
+    with run_log(run.log_path, console if verbose else None):
+        log.info("eucs %s extract, parameters: %s", __version__, parameters)
+        for instance in instances:
+            if not instance.verify_tls:
+                log.warning("TLS certificate verification is disabled for Instance %r", instance.name)
+        try:
+            with _progress_bars() as progress:
+                results = extract_instances(
+                    instances,
+                    run,
+                    device_filter=device_filter,
+                    fetch=not no_fetch,
+                    force=force,
+                    poll_interval=poll_interval,
+                    timeout=timeout_seconds,
+                    workers=workers,
+                    on_event=_ProgressDisplay(progress, device_filter),
+                )
+            summary_path = run.write_summary(parameters, instances, results)
+        except Exception:
+            log.exception("The run stopped on an unexpected error")
+            raise
+        log.info("Run %s", "succeeded" if all_succeeded(results) else "failed")
+
     console.print(_summary_table(results))
     console.print(f"Summary: {escape(str(summary_path))}")
     if not all_succeeded(results):

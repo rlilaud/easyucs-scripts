@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from contextlib import contextmanager
@@ -19,6 +20,8 @@ ProgressCallback = Callable[[str, float], None]
 API_PATH = "/api/v1"
 REQUEST_TIMEOUT_SECONDS = 60
 _UNFINISHED_TASK_STATUSES = ("pending", "in_progress")
+
+log = logging.getLogger(__name__)
 
 
 class EasyUCSError(Exception):
@@ -45,7 +48,8 @@ class EasyUCSClient:
         against the trusted CAs, unless `verify_tls` is false."""
         # The `servers` URL in EasyUCS's published spec is wrong, so the API root is
         # always derived from the root URL the operator gives.
-        self.api_url = root_url.rstrip("/") + API_PATH
+        self.root_url = root_url.rstrip("/")
+        self.api_url = self.root_url + API_PATH
         self._verify: Union[bool, str] = verify_tls if ca_bundle is None else str(ca_bundle)
         self._ca_bundle = ca_bundle
         if not verify_tls:
@@ -118,12 +122,24 @@ class EasyUCSClient:
         timeout: float,
         on_progress: Callable[[float], None],
     ) -> None:
+        last_status = None
         while True:
             payload = self._get_json(f"/tasks/{task_uuid}")
             with _expected_shape(f"GET /tasks/{task_uuid}"):
                 task = payload["task"]
                 status = task.get("status")
             progress = task.get("progress")
+            if status != last_status:
+                log.info(
+                    "%s at %s: task %s is %s (progress %s, message %r)",
+                    description,
+                    self.root_url,
+                    task_uuid,
+                    status,
+                    progress,
+                    task.get("status_message"),
+                )
+                last_status = status
             if isinstance(progress, (int, float)) and not isinstance(progress, bool):
                 on_progress(min(max(float(progress), 0.0), 100.0))
             if status == "successful":
@@ -155,6 +171,14 @@ class EasyUCSClient:
             latest_uuid = items[0]["uuid"]
         return self._request("GET", f"/devices/{device.uuid}/{collection}/{latest_uuid}/actions/download").content
 
+    def authenticate(self, request: requests.PreparedRequest) -> requests.PreparedRequest:
+        """The authentication hook, applied to every request sent to the Instance.
+
+        EasyUCS requires no authentication yet, so the request is sent as is. Whatever is added
+        here, such as an `Authorization` header, must never be logged.
+        """
+        return request
+
     def _get_json(self, path: str, **kwargs: Any) -> Any:
         return _json(self._request("GET", path, **kwargs))
 
@@ -163,12 +187,13 @@ class EasyUCSClient:
         try:
             # Given to each request because a Session's own `verify` loses to REQUESTS_CA_BUNDLE.
             response = self._session.request(
-                method, url, timeout=REQUEST_TIMEOUT_SECONDS, verify=self._verify, **kwargs
+                method, url, timeout=REQUEST_TIMEOUT_SECONDS, verify=self._verify, auth=self.authenticate, **kwargs
             )
         except requests.exceptions.SSLError as exc:
             raise EasyUCSError(f"{method} {url} failed: {exc}{self._certificate_hint(exc)}") from exc
         except requests.RequestException as exc:
             raise EasyUCSError(f"{method} {url} failed: {exc}") from exc
+        log.debug("%s %s -> HTTP %s", method, response.url, response.status_code)
         if not response.ok:
             raise EasyUCSError(f"{method} {url} failed: HTTP {response.status_code}: {_error_message(response)}")
         return response
