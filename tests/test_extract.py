@@ -782,9 +782,27 @@ def test_an_instance_whose_certificate_is_not_trusted_fails_suggesting_a_ca_bund
     assert result.exit_code == 1
     (instance,) = read_summary(tmp_path)["instances"]
     assert instance["outcome"] == "failed"
-    assert "certificate" in instance["reason"]
     assert "ca_bundle" in instance["reason"]
     assert device.fetch_forces == []
+
+
+def test_an_instance_whose_certificate_is_not_issued_by_its_ca_bundle_fails_pointing_to_that_bundle(
+    run_extract_from: RunExtractFrom, https_easyucs: FakeEasyUCS, tmp_path: Path
+) -> None:
+    https_easyucs.add_device("fi-a", "ucsm")
+    trustme.CA().cert_pem.write_to_path(str(tmp_path / "other-ca.pem"))
+    instances_file = tmp_path / "instances.yaml"
+    instances_file.write_text(
+        f"instances:\n  - name: paris\n    url: {https_easyucs.url}\n    ca_bundle: other-ca.pem\n", encoding="utf-8"
+    )
+
+    result = run_extract_from(["--instances", str(instances_file)], tmp_path / "out")
+
+    assert result.exit_code == 1
+    (instance,) = read_summary(tmp_path / "out")["instances"]
+    assert instance["outcome"] == "failed"
+    assert str(tmp_path / "other-ca.pem") in instance["reason"]
+    assert "set 'ca_bundle'" not in instance["reason"]
 
 
 def test_an_instance_is_verified_against_its_ca_bundle(

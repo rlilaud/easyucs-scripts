@@ -19,10 +19,6 @@ ProgressCallback = Callable[[str, float], None]
 API_PATH = "/api/v1"
 REQUEST_TIMEOUT_SECONDS = 60
 _UNFINISHED_TASK_STATUSES = ("pending", "in_progress")
-_CA_BUNDLE_HINT = (
-    "If the Instance's TLS certificate is issued by an internal CA, list the Instance in an"
-    " Instances file with 'ca_bundle' set to that CA's certificate file"
-)
 
 
 class EasyUCSError(Exception):
@@ -51,6 +47,7 @@ class EasyUCSClient:
         # always derived from the root URL the operator gives.
         self.api_url = root_url.rstrip("/") + API_PATH
         self._verify: Union[bool, str] = verify_tls if ca_bundle is None else str(ca_bundle)
+        self._ca_bundle = ca_bundle
         if not verify_tls:
             # The operator is warned once per run instead, not once per host amid the progress bars.
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -169,12 +166,22 @@ class EasyUCSClient:
                 method, url, timeout=REQUEST_TIMEOUT_SECONDS, verify=self._verify, **kwargs
             )
         except requests.exceptions.SSLError as exc:
-            raise EasyUCSError(f"{method} {url} failed: {exc}. {_CA_BUNDLE_HINT}") from exc
+            raise EasyUCSError(f"{method} {url} failed: {exc}{self._certificate_hint(exc)}") from exc
         except requests.RequestException as exc:
             raise EasyUCSError(f"{method} {url} failed: {exc}") from exc
         if not response.ok:
             raise EasyUCSError(f"{method} {url} failed: HTTP {response.status_code}: {_error_message(response)}")
         return response
+
+    def _certificate_hint(self, error: requests.exceptions.SSLError) -> str:
+        if "CERTIFICATE_VERIFY_FAILED" not in str(error):
+            return ""
+        if self._ca_bundle is not None:
+            return f". Check that the CA bundle {self._ca_bundle} holds the CA that issued the Instance's certificate"
+        return (
+            ". If the Instance's certificate is issued by an internal CA, list the Instance in an"
+            " Instances file and set 'ca_bundle' to that CA's certificate file"
+        )
 
 
 @contextmanager

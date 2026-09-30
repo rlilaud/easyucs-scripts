@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Callable, Optional, Sequence
 
 import pytest
+import trustme
 
 from easyucs_scripts.instances import Instance, InstanceDefinitionError, resolve_instances
 
@@ -32,8 +33,8 @@ def resolve_error(instances_file: Optional[Path], urls: Sequence[str]) -> str:
     return str(caught.value)
 
 
-def test_a_yaml_file_lists_instances_with_their_options(tmp_path: Path) -> None:
-    ca_bundle = write(tmp_path, "company CA", "pki/company-ca.pem")
+def test_a_yaml_file_lists_instances_with_their_options(tmp_path: Path, test_ca: trustme.CA) -> None:
+    ca_bundle = write(tmp_path, test_ca.cert_pem.bytes().decode(), "pki/company-ca.pem")
     instances = load(
         tmp_path,
         f"""
@@ -69,8 +70,8 @@ def test_tls_is_verified_without_a_ca_bundle_by_default(tmp_path: Path) -> None:
     assert (instance.verify_tls, instance.ca_bundle) == (True, None)
 
 
-def test_a_relative_ca_bundle_is_relative_to_the_instances_file(tmp_path: Path) -> None:
-    write(tmp_path, "company CA", "pki/ca.pem")
+def test_a_relative_ca_bundle_is_relative_to_the_instances_file(tmp_path: Path, test_ca: trustme.CA) -> None:
+    write(tmp_path, test_ca.cert_pem.bytes().decode(), "pki/ca.pem")
 
     (instance,) = load(tmp_path, "instances:\n  - url: https://easyucs.example.com\n    ca_bundle: pki/ca.pem\n")
 
@@ -272,6 +273,15 @@ def test_a_ca_bundle_that_cannot_be_read_is_rejected_naming_the_entry(
     assert "entry 1" in message
     assert "'ca_bundle'" in message
     assert str(tmp_path / "ca.pem") in message
+
+
+def test_a_ca_bundle_without_any_pem_certificate_is_rejected(tmp_path: Path) -> None:
+    write(tmp_path, "not a certificate", "ca.pem")
+
+    message = load_error(tmp_path, "instances:\n  - url: https://easyucs.example.com\n    ca_bundle: ca.pem\n")
+
+    assert "'ca_bundle'" in message
+    assert "PEM" in message
 
 
 def test_a_ca_bundle_with_tls_verification_disabled_is_contradictory(tmp_path: Path) -> None:

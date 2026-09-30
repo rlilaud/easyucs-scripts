@@ -127,11 +127,13 @@ def _parse_entry(entry: Any, context: _EntryContext) -> Instance:
             raise context.error("'ca_bundle' is only used to verify TLS; remove it or set 'verify_tls: true'")
         ca_bundle_path = context.path.parent / ca_bundle
         try:
-            ca_bundle_path.read_bytes()
+            bundle = ca_bundle_path.read_bytes()
         except OSError as exc:
             raise context.error(
                 f"cannot read CA bundle file {ca_bundle_path}: {exc.strerror or exc}", "ca_bundle"
             ) from None
+        if b"-----BEGIN CERTIFICATE-----" not in bundle:
+            raise context.error(f"CA bundle file {ca_bundle_path} holds no PEM certificate", "ca_bundle")
 
     if "auth" in entry:
         _check_auth(entry["auth"], context)
