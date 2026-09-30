@@ -1,7 +1,8 @@
 """`eucs extract`: save the Config and Inventory of every Device of an Instance."""
 
+from enum import Enum
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Optional
 
 import typer
 from rich.console import Console
@@ -9,11 +10,26 @@ from rich.markup import escape
 from rich.table import Table
 
 from easyucs_scripts.durations import parse_duration
-from easyucs_scripts.extraction import InstanceFailed, Result, all_succeeded, extract_instance
+from easyucs_scripts.extraction import (
+    DeviceFilter,
+    InstanceFailed,
+    NoDeviceSelected,
+    Result,
+    all_succeeded,
+    extract_instance,
+)
 from easyucs_scripts.instances import instance_from_url
 from easyucs_scripts.output import RunFolder
 
 console = Console(soft_wrap=True)
+
+
+class DeviceType(str, Enum):
+    ucsm = "ucsm"
+    cimc = "cimc"
+    imm_domain = "imm_domain"
+    ucsc = "ucsc"
+    intersight = "intersight"
 
 
 def extract(
@@ -24,6 +40,22 @@ def extract(
             help="Root URL of the EasyUCS Instance, as typed in a browser (e.g. http://10.0.0.5:5010).",
         ),
     ],
+    types: Annotated[
+        Optional[list[DeviceType]],
+        typer.Option(
+            "--type",
+            help="Only extract Devices of this type. Repeat to select several types.",
+            show_default=False,
+        ),
+    ] = None,
+    devices: Annotated[
+        Optional[list[str]],
+        typer.Option(
+            "--device",
+            help="Only extract the Device with this name. Repeat to select several Devices.",
+            show_default=False,
+        ),
+    ] = None,
     output: Annotated[
         Path,
         typer.Option(
@@ -69,17 +101,29 @@ def extract(
     except ValueError as exc:
         raise typer.BadParameter(str(exc), param_hint="--timeout") from exc
 
+    device_types = sorted({t.value for t in types or ()})
+    device_names = sorted(set(devices or ()))
+    device_filter = DeviceFilter(types=frozenset(device_types), names=frozenset(device_names))
+
     run = RunFolder.create(output)
     console.print(f"Run folder: {escape(str(run.path))}")
     results: list[Result] = []
     for result in extract_instance(
-        instance, run, fetch=not no_fetch, force=force, poll_interval=poll_interval, timeout=timeout_seconds
+        instance,
+        run,
+        device_filter=device_filter,
+        fetch=not no_fetch,
+        force=force,
+        poll_interval=poll_interval,
+        timeout=timeout_seconds,
     ):
         results.append(result)
-        _print_result(result)
+        _print_result(result, filtered=bool(device_types or device_names))
 
     parameters = {
         "urls": [instance.url],
+        "device_types": device_types,
+        "device_names": device_names,
         "output": str(output),
         "no_fetch": no_fetch,
         "force": force,
@@ -101,6 +145,8 @@ def _summary_table(results: list[Result]) -> Table:
     for result in results:
         if isinstance(result, InstanceFailed):
             table.add_row(escape(result.instance.name), "-", "-", failed, escape(result.reason))
+        elif isinstance(result, NoDeviceSelected):
+            table.add_row(escape(result.instance.name), "-", "-", "[yellow]no Device[/yellow]", "")
         else:
             table.add_row(
                 escape(result.instance.name),
@@ -112,9 +158,16 @@ def _summary_table(results: list[Result]) -> Table:
     return table
 
 
-def _print_result(result: Result) -> None:
+def _print_result(result: Result, *, filtered: bool) -> None:
     if isinstance(result, InstanceFailed):
         console.print(f"[red]FAILED[/red] {escape(result.instance.name)}: {escape(result.reason)}")
+        return
+    if isinstance(result, NoDeviceSelected):
+        name = escape(result.instance.name)
+        if filtered:
+            console.print(f"[yellow]No Device of Instance {name} matches --type / --device[/yellow]")
+        else:
+            console.print(f"[yellow]Instance {name} has no Device to extract[/yellow]")
         return
     label = f"{escape(result.instance.name)} / {escape(result.device.name)} ({escape(result.device.type)})"
     if result.succeeded:

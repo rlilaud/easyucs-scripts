@@ -259,6 +259,106 @@ def test_a_fetch_refused_by_easyucs_fails_with_easyucs_message(
     assert "Unsupported device type" in result.output
 
 
+def test_type_filter_extracts_only_devices_of_that_type(
+    run_extract: RunExtract, fake_easyucs: FakeEasyUCS, tmp_path: Path
+) -> None:
+    fake_easyucs.add_device("fi-a", "ucsm")
+    fake_easyucs.add_device("fi-b", "ucsm")
+    rack = fake_easyucs.add_device("rack-01", "cimc")
+    fake_easyucs.add_device("ucsm_catalog.easyucs", "ucsm", is_system=True)
+
+    result = run_extract(fake_easyucs.url, tmp_path, "--type", "ucsm")
+
+    assert result.exit_code == 0, result.output
+    assert sorted(p.name for p in only_instance_folder(tmp_path).iterdir()) == ["fi-a", "fi-b"]
+    assert rack.fetch_forces == []
+
+
+def test_an_unknown_device_type_is_rejected_with_the_accepted_types(
+    run_extract: RunExtract, fake_easyucs: FakeEasyUCS, tmp_path: Path
+) -> None:
+    device = fake_easyucs.add_device("fi-a", "ucsm")
+
+    result = run_extract(fake_easyucs.url, tmp_path, "--type", "nexus")
+
+    assert result.exit_code == 2
+    assert "--type" in result.output
+    assert "nexus" in result.output
+    for accepted in ("ucsm", "cimc", "imm_domain", "ucsc", "intersight"):
+        assert accepted in result.output
+    assert device.fetch_forces == []
+
+
+def test_device_filter_extracts_only_the_device_with_that_name(
+    run_extract: RunExtract, fake_easyucs: FakeEasyUCS, tmp_path: Path
+) -> None:
+    fake_easyucs.add_device("fi-a", "ucsm")
+    fake_easyucs.add_device("fi-b", "ucsm")
+
+    result = run_extract(fake_easyucs.url, tmp_path, "--device", "fi-b")
+
+    assert result.exit_code == 0, result.output
+    assert [p.name for p in only_instance_folder(tmp_path).iterdir()] == ["fi-b"]
+
+
+def test_filters_can_be_repeated_to_select_several_values(
+    run_extract: RunExtract, fake_easyucs: FakeEasyUCS, tmp_path: Path
+) -> None:
+    for name, device_type in [("fi-a", "ucsm"), ("rack-01", "cimc"), ("central", "ucsc"), ("LabDC", "intersight")]:
+        fake_easyucs.add_device(name, device_type)
+
+    by_type = run_extract(fake_easyucs.url, tmp_path / "by-type", "--type", "cimc", "--type", "intersight")
+    by_name = run_extract(fake_easyucs.url, tmp_path / "by-name", "--device", "fi-a", "--device", "central")
+
+    assert by_type.exit_code == 0, by_type.output
+    assert by_name.exit_code == 0, by_name.output
+    assert sorted(p.name for p in only_instance_folder(tmp_path / "by-type").iterdir()) == ["LabDC", "rack-01"]
+    assert sorted(p.name for p in only_instance_folder(tmp_path / "by-name").iterdir()) == ["central", "fi-a"]
+
+
+def test_a_device_must_match_both_type_and_name_filters(
+    run_extract: RunExtract, fake_easyucs: FakeEasyUCS, tmp_path: Path
+) -> None:
+    fake_easyucs.add_device("fi-a", "ucsm")
+    fake_easyucs.add_device("fi-b", "ucsm")
+    fake_easyucs.add_device("rack-01", "cimc")
+
+    result = run_extract(
+        fake_easyucs.url, tmp_path, "--type", "ucsm", "--device", "fi-a", "--device", "rack-01"
+    )
+
+    assert result.exit_code == 0, result.output
+    assert [p.name for p in only_instance_folder(tmp_path).iterdir()] == ["fi-a"]
+
+
+def test_catalog_devices_stay_excluded_even_when_filters_name_them(
+    run_extract: RunExtract, fake_easyucs: FakeEasyUCS, tmp_path: Path
+) -> None:
+    fake_easyucs.add_device("fi-a", "ucsm")
+    catalog = fake_easyucs.add_device("ucsm_catalog.easyucs", "ucsm", is_system=True)
+
+    result = run_extract(
+        fake_easyucs.url, tmp_path, "--type", "ucsm", "--device", "fi-a", "--device", "ucsm_catalog.easyucs"
+    )
+
+    assert result.exit_code == 0, result.output
+    assert [p.name for p in only_instance_folder(tmp_path).iterdir()] == ["fi-a"]
+    assert catalog.fetch_forces == []
+
+
+def test_filters_matching_no_device_say_so_for_the_instance(
+    run_extract: RunExtract, fake_easyucs: FakeEasyUCS, tmp_path: Path
+) -> None:
+    fake_easyucs.add_device("fi-a", "ucsm")
+    fake_easyucs.add_device("ucsm_catalog.easyucs", "ucsm", is_system=True)
+
+    result = run_extract(fake_easyucs.url, tmp_path, "--type", "cimc")
+
+    assert result.exit_code == 0, result.output
+    assert re.search(rf"No Device of Instance 127\.0\.0\.1_{fake_easyucs.port} matches", result.output)
+    assert read_summary(tmp_path)["devices"] == []
+
+
 def test_summary_records_run_parameters_and_the_outcome_and_files_of_every_device(
     run_extract: RunExtract, fake_easyucs: FakeEasyUCS, tmp_path: Path
 ) -> None:
@@ -267,12 +367,14 @@ def test_summary_records_run_parameters_and_the_outcome_and_files_of_every_devic
     fake_easyucs.add_device("ucsm_catalog.easyucs", "ucsm", is_system=True)
     instance = f"127.0.0.1_{fake_easyucs.port}"
 
-    result = run_extract(fake_easyucs.url, tmp_path, "--timeout", "5m", "--force")
+    result = run_extract(fake_easyucs.url, tmp_path, "--timeout", "5m", "--force", "--type", "ucsm", "--type", "cimc")
 
     assert result.exit_code == 1
     summary = read_summary(tmp_path)
     assert summary["parameters"] == {
         "urls": [fake_easyucs.url],
+        "device_types": ["cimc", "ucsm"],
+        "device_names": [],
         "output": str(tmp_path),
         "no_fetch": False,
         "force": True,
