@@ -126,6 +126,7 @@ def test_the_same_url_given_twice_is_rejected_as_a_duplicate_name() -> None:
     message = resolve_error(None, ["http://10.0.0.5:5010", "http://10.0.0.5:5010/"])
 
     assert "'10.0.0.5_5010'" in message
+    assert "once" in message
 
 
 def test_an_entry_without_url_is_rejected_naming_the_entry(tmp_path: Path) -> None:
@@ -217,6 +218,23 @@ def test_a_literal_password_is_always_rejected_pointing_to_password_env(tmp_path
     assert "hunter2" not in message
 
 
+def test_a_literal_password_next_to_the_url_is_also_rejected_pointing_to_password_env(tmp_path: Path) -> None:
+    message = load_error(tmp_path, "instances:\n  - url: http://10.0.0.5:5010\n    password: hunter2\n")
+
+    assert "entry 1" in message
+    assert "password_env" in message
+    assert "hunter2" not in message
+
+
+def test_a_yaml_syntax_error_does_not_echo_the_offending_line(tmp_path: Path) -> None:
+    message = load_error(
+        tmp_path, 'instances:\n  - url: http://10.0.0.5:5010\n    auth:\n      password: "hunter2\n'
+    )
+
+    assert "hunter2" not in message
+    assert re.search(r"line \d+", message)
+
+
 def test_an_unknown_auth_field_is_rejected(tmp_path: Path) -> None:
     message = load_error(tmp_path, "instances:\n  - url: http://10.0.0.5:5010\n    auth:\n      type: none\n      token: x\n")
 
@@ -290,6 +308,15 @@ def test_a_missing_file_is_reported(tmp_path: Path) -> None:
     message = resolve_error(tmp_path / "missing.yaml", [])
 
     assert "missing.yaml" in message
+
+
+@pytest.mark.parametrize("url", ["admin:hunter2@10.0.0.5:5010", "http://admin:hunter2@10.0.0.5", "http://:hunter2@h"])
+def test_a_url_option_with_credentials_is_rejected_without_echoing_them(url: str) -> None:
+    message = resolve_error(None, [url])
+
+    assert "--url" in message
+    assert "credentials" in message
+    assert "hunter2" not in message
 
 
 def test_an_invalid_url_option_is_rejected() -> None:

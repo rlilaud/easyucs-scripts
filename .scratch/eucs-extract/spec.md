@@ -146,8 +146,8 @@ All user-facing text (help, errors, documentation) is in English.
 
 ### Instances file schema
 
-- Top-level `instances:` list. Each entry: `url` (required), `name` (optional, derived from host and port such as `10.0.0.5_5010` when absent; duplicates rejected), `verify_tls` (optional, default true), `ca_bundle` (optional path), `auth` (optional).
-- Parsed with PyYAML's safe loader, which also accepts JSON.
+- Top-level `instances:` list. Each entry: `url` (required), `name` (optional, derived from host and port such as `10.0.0.5_5010` when absent; duplicates rejected), `verify_tls` (optional, default true), `ca_bundle` (optional path; a relative path is relative to the Instances file's folder), `auth` (optional).
+- Parsed with PyYAML's safe loader, which also accepts most JSON. Files ending in `.json` are parsed as JSON instead, because PyYAML rejects some valid JSON (tab indentation).
 - `auth`: `type` is required inside the block; only `none` is accepted today, any other value is a clear error. The schema reserves `username` and `password_env` (name of an environment variable holding the secret; masked prompt if unset) for future types. A literal `password` field is always rejected with an explanation.
 - Unknown fields are rejected, so typos don't pass silently.
 

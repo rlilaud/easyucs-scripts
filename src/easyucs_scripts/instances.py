@@ -1,6 +1,6 @@
 """Instances file loader: validated Instance definitions, from an Instances file and bare `--url` values.
 
-Pure: it reads the Instances file but never touches the network.
+It reads the Instances file but never touches the network.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ def _load_file(path: Path) -> list[Instance]:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         raise InstanceDefinitionError(f"Cannot read Instances file {path}: {exc}") from None
-    document = _parse(path, text)
+    document = _parse_document(path, text)
     if not isinstance(document, dict):
         raise InstanceDefinitionError(f"{path}: expected a top-level 'instances' list")
     unknown = [key for key in document if key != "instances"]
@@ -63,7 +63,7 @@ def _load_file(path: Path) -> list[Instance]:
     return [_parse_entry(entry, _EntryContext(path, position, entry)) for position, entry in enumerate(entries, 1)]
 
 
-def _parse(path: Path, text: str) -> Any:
+def _parse_document(path: Path, text: str) -> Any:
     # PyYAML does not accept every JSON document (tab indentation, for one), hence the JSON parser.
     if path.suffix.lower() == ".json":
         try:
@@ -72,8 +72,13 @@ def _parse(path: Path, text: str) -> Any:
             raise InstanceDefinitionError(f"{path} is not valid JSON: {exc}") from None
     try:
         return yaml.safe_load(text)
-    except yaml.YAMLError as exc:
-        raise InstanceDefinitionError(f"{path} is not valid YAML or JSON: {exc}") from None
+    except yaml.MarkedYAMLError as exc:
+        # PyYAML's own message quotes the offending line, which may hold a secret.
+        mark = exc.problem_mark
+        where = "" if mark is None else f" at line {mark.line + 1}, column {mark.column + 1}"
+        raise InstanceDefinitionError(f"{path} is not valid YAML or JSON{where}: {exc.problem}") from None
+    except yaml.YAMLError:
+        raise InstanceDefinitionError(f"{path} is not valid YAML or JSON") from None
 
 
 class _EntryContext:
@@ -92,6 +97,7 @@ class _EntryContext:
 def _parse_entry(entry: Any, context: _EntryContext) -> Instance:
     if not isinstance(entry, dict):
         raise context.error("expected a mapping with at least a 'url' field")
+    _reject_password(entry, context, "password")
     _reject_unknown_fields(entry, _ENTRY_FIELDS, context, None)
 
     url = entry.get("url")
@@ -133,12 +139,7 @@ def _parse_entry(entry: Any, context: _EntryContext) -> Instance:
 def _check_auth(auth: Any, context: _EntryContext) -> None:
     if not isinstance(auth, dict):
         raise context.error("must be a mapping with at least a 'type' field, e.g. 'type: none'", "auth")
-    if "password" in auth:
-        raise context.error(
-            "plain-text passwords are not allowed in the Instances file; set 'password_env' to the name"
-            " of an environment variable holding the password instead",
-            "auth.password",
-        )
+    _reject_password(auth, context, "auth.password")
     _reject_unknown_fields(auth, _AUTH_FIELDS, context, "auth")
     auth_type = auth.get("type")
     if auth_type is None:
@@ -147,9 +148,15 @@ def _check_auth(auth: Any, context: _EntryContext) -> None:
         raise context.error(
             f"authentication type {auth_type!r} is not supported yet; only 'none' is accepted", "auth.type"
         )
-    for field in ("username", "password_env"):
-        if field in auth and not isinstance(auth[field], str):
-            raise context.error("must be a text", f"auth.{field}")
+
+
+def _reject_password(mapping: dict[Any, Any], context: _EntryContext, field: str) -> None:
+    if "password" in mapping:
+        raise context.error(
+            "plain-text passwords are not allowed in the Instances file; in the 'auth' block, set"
+            " 'password_env' to the name of an environment variable holding the password instead",
+            field,
+        )
 
 
 def _reject_unknown_fields(
@@ -164,7 +171,8 @@ def _reject_unknown_fields(
 def _name_from_url(url: str) -> str:
     """The Instance name derived from the URL's host and port (e.g. `10.0.0.5_5010`)."""
     parts = urlsplit(url)
-    if parts.username is not None or parts.password is not None:
+    # Without a scheme, `user:password@host` does not parse as credentials, hence the `@` check.
+    if "@" in url or parts.username is not None or parts.password is not None:
         # The URL is not echoed back: it holds a secret.
         raise InstanceDefinitionError("Instance URLs must not contain credentials (user:password@host)")
     invalid_url_error = InstanceDefinitionError(
@@ -185,6 +193,6 @@ def _check_distinct_names(instances: Sequence[Instance]) -> None:
         other = seen.setdefault(instance.name, instance)
         if other is not instance:
             raise InstanceDefinitionError(
-                f"Two Instances are named {instance.name!r} ({other.url} and {instance.url});"
-                " give them distinct names with 'name' in the Instances file"
+                f"Two Instances are named {instance.name!r} ({other.url} and {instance.url}); list each"
+                " Instance only once, and give distinct Instances distinct names with 'name' in the Instances file"
             )
