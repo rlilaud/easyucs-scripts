@@ -1,10 +1,11 @@
 """A fake EasyUCS Instance: a standard-library HTTP server serving the API under `/api/v1`.
 
 Tests build a scenario by adding Devices, point `eucs` at `FakeEasyUCS.url`, and inspect
-the Devices afterwards. Every Device starts with one stored Config and Inventory. A Fetch
-task reports `pending`, then `in_progress`, then the Device's `task_outcome`; it stores a
-new, distinguishable artifact only when it reports `successful`, so tests can tell fresh
-artifacts from stale ones. Setting `FakeEasyUCS.error` makes every request fail, and
+the Devices afterwards. A Device starts with one stored Config and Inventory unless told
+otherwise. A Fetch task reports `pending`, then `in_progress`, then the Device's
+`task_outcome`; it stores a new, distinguishable artifact only when it reports `successful`,
+so tests can tell fresh artifacts from stale ones. Each Device records the `force` value of
+every Fetch request it receives. Setting `FakeEasyUCS.error` makes every request fail, and
 `FakeEasyUCS.devices_response` replaces the body of the Device listing.
 
 The behaviour mirrors a real EasyUCS 1.0.6 where it differs from its published OpenAPI spec:
@@ -49,6 +50,9 @@ class FakeDevice:
     uuid: str = field(default_factory=lambda: str(uuid.uuid4()))
     configs: list[StoredArtifact] = field(default_factory=list)
     inventories: list[StoredArtifact] = field(default_factory=list)
+    fetch_forces: list[Any] = field(default_factory=list)
+    configs_fetched: int = 0
+    inventories_fetched: int = 0
 
     @property
     def latest_config(self) -> bytes:
@@ -57,14 +61,6 @@ class FakeDevice:
     @property
     def latest_inventory(self) -> bytes:
         return max(self.inventories, key=lambda a: a.timestamp).content
-
-    @property
-    def configs_fetched(self) -> int:
-        return len(self.configs) - 1
-
-    @property
-    def inventories_fetched(self) -> int:
-        return len(self.inventories) - 1
 
 
 @dataclass
@@ -116,8 +112,10 @@ class FakeEasyUCS:
         fetch_error: Optional[str] = None,
         task_outcome: str = "successful",
         task_message: Optional[str] = None,
+        stored_config: bool = True,
+        stored_inventory: bool = True,
     ) -> FakeDevice:
-        """Add a Device.
+        """Add a Device, with one stored Config and Inventory unless told otherwise.
 
         With `fetch_error`, EasyUCS refuses its Fetches with HTTP 500 and that message. Its Fetch
         tasks end with status `task_outcome` and `task_message`; `in_progress` never ends.
@@ -130,8 +128,10 @@ class FakeEasyUCS:
             task_outcome=task_outcome,
             task_message=task_message,
         )
-        self._store_artifact(device, "configs")
-        self._store_artifact(device, "inventories")
+        if stored_config:
+            self._store_artifact(device, "configs")
+        if stored_inventory:
+            self._store_artifact(device, "inventories")
         self.devices.append(device)
         return device
 
@@ -143,7 +143,9 @@ class FakeEasyUCS:
 
     # Request handling, called from the server threads.
 
-    def handle(self, method: str, path: str, query: dict[str, list[str]]) -> tuple[int, Any]:
+    def handle(
+        self, method: str, path: str, query: dict[str, list[str]], request_body: Any = None
+    ) -> tuple[int, Any]:
         with self._lock:
             if self.error is not None:
                 return self.error[0], {"message": self.error[1]}
@@ -158,7 +160,7 @@ class FakeEasyUCS:
 
             match = re.fullmatch(r"/devices/([^/]+)/(configs|inventories)/actions/fetch", path)
             if method == "POST" and match:
-                return self._start_fetch(match.group(1), match.group(2))
+                return self._start_fetch(match.group(1), match.group(2), request_body)
 
             match = re.fullmatch(r"/tasks/([^/]+)", path)
             if method == "GET" and match and match.group(1) in self._tasks:
@@ -185,10 +187,11 @@ class FakeEasyUCS:
     def _device(self, device_uuid: str) -> Optional[FakeDevice]:
         return next((d for d in self.devices if d.uuid == device_uuid), None)
 
-    def _start_fetch(self, device_uuid: str, collection: str) -> tuple[int, Any]:
+    def _start_fetch(self, device_uuid: str, collection: str, request_body: Any) -> tuple[int, Any]:
         device = self._device(device_uuid)
         if device is None:
             return 404, {"message": "Device not found"}
+        device.fetch_forces.append(request_body.get("force") if isinstance(request_body, dict) else None)
         if device.is_system:
             return 500, {"message": "Catalog Devices cannot be fetched"}
         if device.fetch_error is not None:
@@ -209,6 +212,10 @@ class FakeEasyUCS:
         if outcome == "successful":
             if task.polls == len(_TASK_STATUSES_BEFORE_OUTCOME) + 1:
                 self._store_artifact(task.device, task.collection)
+                if task.collection == "configs":
+                    task.device.configs_fetched += 1
+                else:
+                    task.device.inventories_fetched += 1
             message = task.device.task_message or "Successfully completed task"
             return {**payload, "status": "successful", "progress": 100, "status_message": message}
         return {**payload, "status": outcome, "progress": 100, "status_message": task.device.task_message}
@@ -247,12 +254,16 @@ def _handler_for(fake: FakeEasyUCS) -> type[BaseHTTPRequestHandler]:
 
         def do_POST(self) -> None:
             length = int(self.headers.get("Content-Length") or 0)
-            self.rfile.read(length)
-            self._dispatch("POST")
+            raw = self.rfile.read(length)
+            try:
+                request_body = json.loads(raw) if raw else None
+            except ValueError:
+                request_body = None
+            self._dispatch("POST", request_body)
 
-        def _dispatch(self, method: str) -> None:
+        def _dispatch(self, method: str, request_body: Any = None) -> None:
             parts = urlsplit(self.path)
-            status, body = fake.handle(method, parts.path, parse_qs(parts.query))
+            status, body = fake.handle(method, parts.path, parse_qs(parts.query), request_body)
             payload = body if isinstance(body, bytes) else json.dumps(body).encode()
             self.send_response(status)
             self.send_header("Content-Type", "application/octet-stream" if isinstance(body, bytes) else "application/json")

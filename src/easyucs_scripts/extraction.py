@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterator, Optional, Sequence, Union
 
-from easyucs_scripts.client import Device, EasyUCSClient, EasyUCSError
+from easyucs_scripts.client import Device, EasyUCSClient, EasyUCSError, NothingStoredError
 from easyucs_scripts.instances import Instance
 
 if TYPE_CHECKING:
@@ -36,10 +36,14 @@ class InstanceFailed:
 Result = Union[DeviceResult, InstanceFailed]
 
 
-def extract_instance(instance: Instance, run: RunFolder, *, poll_interval: float, timeout: float) -> Iterator[Result]:
+def extract_instance(
+    instance: Instance, run: RunFolder, *, fetch: bool, force: bool, poll_interval: float, timeout: float
+) -> Iterator[Result]:
     """Fetch and save the Config and Inventory of every real Device of `instance`, one by one.
 
-    `timeout` bounds each Device's Fetch, in seconds. Failures are reported as results, never raised.
+    Without `fetch`, the most recent stored Config and Inventory are saved instead. `force` is
+    passed to each Fetch and `timeout` bounds it, in seconds. Failures are reported as results,
+    never raised.
     """
     client = EasyUCSClient(instance.url)
     try:
@@ -51,10 +55,14 @@ def extract_instance(instance: Instance, run: RunFolder, *, poll_interval: float
         if device.is_catalog:
             continue
         try:
-            client.fetch(device, poll_interval=poll_interval, timeout=timeout)
+            if fetch:
+                client.fetch(device, force=force, poll_interval=poll_interval, timeout=timeout)
             config = client.download_latest_config(device)
             inventory = client.download_latest_inventory(device)
             folder = run.save_device(instance.name, device.name, config, inventory)
+        except NothingStoredError as exc:
+            hint = "" if fetch else "; run without --no-fetch to Fetch it"
+            yield DeviceResult(instance=instance, device=device, failure=f"{exc}{hint}")
         except EasyUCSError as exc:
             yield DeviceResult(instance=instance, device=device, failure=str(exc))
         except OSError as exc:

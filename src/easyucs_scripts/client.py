@@ -20,6 +20,10 @@ class EasyUCSError(Exception):
     """An Instance could not be reached, or did not do what was asked."""
 
 
+class NothingStoredError(EasyUCSError):
+    """A Device has no stored Config or Inventory to download."""
+
+
 @dataclass(frozen=True)
 class Device:
     uuid: str
@@ -48,17 +52,18 @@ class EasyUCSClient:
                 for device in payload["devices"]
             ]
 
-    def fetch(self, device: Device, *, poll_interval: float, timeout: float) -> None:
+    def fetch(self, device: Device, *, force: bool, poll_interval: float, timeout: float) -> None:
         """Fetch a fresh Config and Inventory of `device`, and wait until the Instance has stored them.
 
-        Raises EasyUCSError if both are not stored within `timeout` seconds.
+        With `force`, EasyUCS carries on past failed SDK objects or Intersight license validation,
+        so the Config may be incomplete. Raises EasyUCSError if both are not stored within `timeout` seconds.
         """
         deadline = time.monotonic() + timeout
         # The combined `fetch_config_and_inventory` action is refused for some device types
         # (Intersight: "Unsupported device type"), so Config and Inventory are fetched separately.
         for collection, label in (("configs", "Config"), ("inventories", "Inventory")):
             path = f"/devices/{device.uuid}/{collection}/actions/fetch"
-            response = self._request("POST", path, json={"force": False})
+            response = self._request("POST", path, json={"force": force})
             with _expected_shape(f"POST {path}"):
                 task_uuid = _json(response)["task"]
             description = f"{label} Fetch of Device {device.name!r}"
@@ -97,7 +102,7 @@ class EasyUCSClient:
         with _expected_shape(f"GET {path}"):
             items = listing.get(collection) or []
             if not items:
-                raise EasyUCSError(f"Device {device.name!r} has no stored {label}")
+                raise NothingStoredError(f"Device {device.name!r} has no stored {label}")
             latest_uuid = items[0]["uuid"]
         return self._request("GET", f"/devices/{device.uuid}/{collection}/{latest_uuid}/actions/download").content
 
