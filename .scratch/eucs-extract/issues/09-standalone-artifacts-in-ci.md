@@ -14,3 +14,7 @@ See the parent spec: `.scratch/eucs-extract/spec.md` (Distribution).
 - [x] Each executable is smoke-tested on its OS runner: `--version`, then a short `extract` against the fake EasyUCS producing the expected files.
 - [x] The zipapp is smoke-tested the same way with the oldest supported Python (3.9) and a recent one.
 - [x] Artifacts are uploaded as CI build artifacts.
+
+## Comments
+
+- 2026-09-30: to save GitHub Actions minutes on the free plan (private repo, macOS counts 10x), the Artifacts workflow runs on pull requests that touch the build (`src/`, `scripts/`, `tests/fake_easyucs.py`, `pyproject.toml`, the workflow), on `v*` tags and on demand, instead of on every push. Superseded runs are cancelled, CI artifacts are kept 7 days, and the Tests workflow runs macOS on Python 3.13 only.

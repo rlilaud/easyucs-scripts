@@ -6,6 +6,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     strategy:
@@ -14,6 +18,10 @@ jobs:
         # Pinned: setup-python may not provide Python 3.9 on later Ubuntu releases.
         os: [ubuntu-24.04, windows-latest, macos-latest]
         python-version: ["3.9", "3.13"]
+        # macOS minutes count 10x; the Artifacts workflow already runs the zipapp there on Python 3.9.
+        exclude:
+          - os: macos-latest
+            python-version: "3.9"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
