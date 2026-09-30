@@ -2,6 +2,7 @@ name: Artifacts
 
 # Runs only when the artifacts can change, to save Actions minutes (macOS counts 10x, Windows 2x).
 # macOS jobs run only on release tags: the macOS executable is a bonus the maintainer can't test.
+# A vX.Y.Z tag also publishes every artifact and their SHA-256 checksums as a GitHub Release.
 on:
   pull_request:
     paths:
@@ -22,8 +23,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # First, so that a tag not matching __version__ fails before any artifact is built.
+  release-tag:
+    name: Release tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check the tag names the package version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: python3 scripts/check_release_tag.py "$GITHUB_REF_NAME"
+
   executable:
     name: Executable (${{ matrix.os }})
+    needs: release-tag
     strategy:
       fail-fast: false
       matrix:
@@ -54,6 +66,7 @@ jobs:
   # Ubuntu 22.04+ and SLES 15 SP4+.
   linux-executable:
     name: Executable (almalinux:8)
+    needs: release-tag
     runs-on: ubuntu-latest
     container: almalinux:8
     steps:
@@ -75,6 +88,7 @@ jobs:
 
   zipapp:
     name: Zipapp
+    needs: release-tag
     # Pinned: setup-python may not provide Python 3.9 on later Ubuntu releases.
     runs-on: ubuntu-24.04
     steps:
@@ -126,3 +140,31 @@ jobs:
         run: ${{ steps.oldest.outputs.python-path }} scripts/smoke_test.py ${{ steps.oldest.outputs.python-path }} dist/eucs.pyz
       - name: Smoke test with Python 3.13
         run: ${{ steps.recent.outputs.python-path }} scripts/smoke_test.py ${{ steps.recent.outputs.python-path }} dist/eucs.pyz
+
+  release:
+    name: GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [executable, linux-executable, zipapp, zipapp-on-other-os]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+      - name: Name the release files and write their checksums
+        run: |
+          mkdir release
+          cp artifacts/eucs-windows-x86_64/eucs.exe release/eucs-windows-x86_64.exe
+          cp artifacts/eucs-linux-x86_64/eucs release/eucs-linux-x86_64
+          cp artifacts/eucs-macos-arm64/eucs release/eucs-macos-arm64
+          cp artifacts/eucs-zipapp/eucs.pyz release/eucs.pyz
+          cd release
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "$GITHUB_REF_NAME" release/*
+          --repo "$GITHUB_REPOSITORY" --verify-tag --title "eucs $GITHUB_REF_NAME" --generate-notes

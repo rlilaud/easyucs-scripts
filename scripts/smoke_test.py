@@ -12,7 +12,6 @@ artifact cannot borrow an installed package it failed to bundle.
 from __future__ import annotations
 
 import json
-import re
 import subprocess
 import sys
 import tempfile
@@ -22,6 +21,7 @@ from typing import Sequence
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tests"))
 
+from check_release_tag import package_version  # noqa: E402
 from fake_easyucs import FakeEasyUCS  # noqa: E402
 
 
@@ -32,13 +32,10 @@ def main(command: Sequence[str]) -> None:
 
 
 def check_version(command: Sequence[str]) -> None:
-    init = (ROOT / "src" / "easyucs_scripts" / "__init__.py").read_text(encoding="utf-8")
-    expected = re.search(r'^__version__ = "([^"]+)"', init, re.MULTILINE)
-    if expected is None:
-        raise SystemExit("__version__ not found in src/easyucs_scripts/__init__.py")
+    expected = package_version()
     printed = run(command, "--version").stdout.strip()
-    if printed != expected.group(1):
-        raise SystemExit(f"--version printed {printed!r}, expected {expected.group(1)!r}")
+    if printed != expected:
+        raise SystemExit(f"--version printed {printed!r}, expected {expected!r}")
 
 
 def check_extract(command: Sequence[str]) -> None:
