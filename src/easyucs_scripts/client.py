@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -35,11 +36,21 @@ class Device:
 
 
 class EasyUCSClient:
+    """May be used from several threads at once."""
+
     def __init__(self, root_url: str) -> None:
         # The `servers` URL in EasyUCS's published spec is wrong, so the API root is
         # always derived from the root URL the operator gives.
         self.api_url = root_url.rstrip("/") + API_PATH
-        self._session = requests.Session()
+        self._thread_local = threading.local()
+
+    @property
+    def _session(self) -> requests.Session:
+        # requests does not guarantee that a Session is safe to share between threads.
+        session: Optional[requests.Session] = getattr(self._thread_local, "session", None)
+        if session is None:
+            session = self._thread_local.session = requests.Session()
+        return session
 
     def list_devices(self) -> list[Device]:
         payload = self._get_json("/devices")
@@ -81,7 +92,7 @@ class EasyUCSClient:
                 task_uuid = _json(response)["task"]
             step = f"{label} Fetch"
 
-            def report(task_progress: float, step: str = step, index: int = index) -> None:
+            def report(task_progress: float) -> None:
                 if on_progress is not None:
                     on_progress(step, (index * 100 + task_progress) / len(steps))
 

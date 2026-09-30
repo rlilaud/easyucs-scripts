@@ -45,7 +45,7 @@ class RunFolder:
 
     def __init__(self, path: Path, instance_names: Sequence[str]) -> None:
         self.path = path
-        self._instance_folders = _distinct_folders(path, instance_names)
+        self._instance_folders = dict(zip(instance_names, _distinct_folders(path, instance_names)))
 
     @classmethod
     def create(cls, output_dir: Path, instance_names: Sequence[str]) -> RunFolder:
@@ -56,13 +56,16 @@ class RunFolder:
         output_dir.mkdir(parents=True, exist_ok=True)
         return cls(_new_folder(output_dir, datetime.now().strftime(RUN_TIMESTAMP_FORMAT)), instance_names)
 
-    def save_device(self, instance_name: str, device_name: str, config: bytes, inventory: bytes) -> Path:
-        instance_folder = self._instance_folders[instance_name]
-        instance_folder.mkdir(exist_ok=True)
-        device_folder = _new_folder(instance_folder, safe_filename(device_name))
-        (device_folder / CONFIG_FILENAME).write_bytes(config)
-        (device_folder / INVENTORY_FILENAME).write_bytes(inventory)
-        return device_folder
+    def device_folders(self, instance_name: str, device_names: Sequence[str]) -> list[Path]:
+        """The folders in which to save the Devices named `device_names` of an Instance, in the
+        same order. Devices whose safe names clash get distinct folders, suffixed in that order."""
+        return _distinct_folders(self._instance_folders[instance_name], device_names)
+
+    def save_device(self, folder: Path, config: bytes, inventory: bytes) -> None:
+        """Save a Device's Config and Inventory in `folder`, given by `device_folders`."""
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / CONFIG_FILENAME).write_bytes(config)
+        (folder / INVENTORY_FILENAME).write_bytes(inventory)
 
     def write_summary(
         self, parameters: Mapping[str, Any], instances: Sequence[Instance], results: Sequence[Result]
@@ -108,11 +111,11 @@ class RunFolder:
         return path.relative_to(self.path).as_posix()
 
 
-def _distinct_folders(parent: Path, names: Sequence[str]) -> dict[str, Path]:
-    """Map each of `names` to a folder of `parent` named after it, suffixed `_2`, `_3`... when
+def _distinct_folders(parent: Path, names: Sequence[str]) -> list[Path]:
+    """A folder of `parent` for each of `names`, named after it and suffixed `_2`, `_3`... when
     its safe name is taken (case-insensitively, as on Windows)."""
     taken: set[str] = set()
-    folders = {}
+    folders = []
     for name in names:
         base = candidate = safe_filename(name)
         attempt = 1
@@ -120,7 +123,7 @@ def _distinct_folders(parent: Path, names: Sequence[str]) -> dict[str, Path]:
             attempt += 1
             candidate = f"{base}_{attempt}"
         taken.add(candidate.casefold())
-        folders[name] = parent / candidate
+        folders.append(parent / candidate)
     return folders
 
 

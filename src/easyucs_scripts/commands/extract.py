@@ -225,7 +225,7 @@ class _ProgressDisplay:
             self._progress.stop_task(bar)
         elif isinstance(event, InstanceFailed):
             console.print(f"[red]FAILED[/red] {escape(event.instance.name)}: {escape(event.reason)}")
-        else:
+        elif isinstance(event, NoDeviceSelected):
             name = escape(event.instance.name)
             if self._device_filter.narrows:
                 console.print(f"[yellow]No Device of Instance {name} matches --type / --device[/yellow]")

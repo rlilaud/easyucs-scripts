@@ -153,11 +153,18 @@ def _extract_instance(instance: Instance, options: _Options) -> list[Result]:
         options.report(nothing)
         return [nothing]
     options.report(DevicesSelected(instance=instance, devices=devices))
+    folders = options.run.device_folders(instance.name, [device.name for device in devices])
     with ThreadPoolExecutor(max_workers=options.workers) as pool:
-        return list(pool.map(lambda device: _extract_device(client, instance, device, options), devices))
+        return list(
+            pool.map(
+                lambda device, folder: _extract_device(client, instance, device, folder, options), devices, folders
+            )
+        )
 
 
-def _extract_device(client: EasyUCSClient, instance: Instance, device: Device, options: _Options) -> DeviceResult:
+def _extract_device(
+    client: EasyUCSClient, instance: Instance, device: Device, folder: Path, options: _Options
+) -> DeviceResult:
     def progress(step: str, percent: Optional[float] = None) -> None:
         options.report(DeviceProgress(instance=instance, device=device, step=step, percent=percent))
 
@@ -173,7 +180,7 @@ def _extract_device(client: EasyUCSClient, instance: Instance, device: Device, o
         progress("Downloading")
         config = client.download_latest_config(device)
         inventory = client.download_latest_inventory(device)
-        folder = options.run.save_device(instance.name, device.name, config, inventory)
+        options.run.save_device(folder, config, inventory)
     except NothingStoredError as exc:
         hint = "" if options.fetch else "; run without --no-fetch to Fetch it"
         result = DeviceResult(instance=instance, device=device, failure=f"{exc}{hint}")

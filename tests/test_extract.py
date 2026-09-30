@@ -642,7 +642,7 @@ def test_instances_whose_safe_names_clash_get_distinct_folders(
     assert files == ["lab_a/fi-a/config.json", "lab_a_2/fi-b/config.json"]
 
 
-SLOW_POLLING = ("--poll-interval", "0.01")
+BRIEF_POLL_INTERVAL = ("--poll-interval", "0.01")
 
 
 def test_workers_bounds_the_devices_fetched_at_once_in_an_instance(
@@ -652,7 +652,7 @@ def test_workers_bounds_the_devices_fetched_at_once_in_an_instance(
     for index in range(5):
         fake_easyucs.add_device(f"fi-{index}", "ucsm")
 
-    result = run_extract(fake_easyucs.url, tmp_path, "--workers", "2", *SLOW_POLLING)
+    result = run_extract(fake_easyucs.url, tmp_path, "--workers", "2", *BRIEF_POLL_INTERVAL)
 
     assert result.exit_code == 0, result.output
     assert fake_easyucs.peak_concurrent_fetches == 2
@@ -666,7 +666,7 @@ def test_four_devices_of_an_instance_are_fetched_at_once_by_default(
     for index in range(6):
         fake_easyucs.add_device(f"fi-{index}", "ucsm")
 
-    result = run_extract(fake_easyucs.url, tmp_path, *SLOW_POLLING)
+    result = run_extract(fake_easyucs.url, tmp_path, *BRIEF_POLL_INTERVAL)
 
     assert result.exit_code == 0, result.output
     assert fake_easyucs.peak_concurrent_fetches == 4
@@ -682,6 +682,22 @@ def test_workers_must_be_at_least_one(run_extract: RunExtract, fake_easyucs: Fak
     assert device.fetch_forces == []
 
 
+def test_devices_whose_safe_names_clash_get_folders_in_listing_order_whichever_finishes_first(
+    run_extract: RunExtract, fake_easyucs: FakeEasyUCS, tmp_path: Path
+) -> None:
+    colon = fake_easyucs.add_device("fi:a", "ucsm", task_seconds=0.3)
+    slash = fake_easyucs.add_device("fi/a", "ucsm")
+
+    result = run_extract(fake_easyucs.url, tmp_path, *BRIEF_POLL_INTERVAL)
+
+    assert result.exit_code == 0, result.output
+    instance_folder = only_instance_folder(tmp_path)
+    assert (instance_folder / "fi_a" / "config.json").read_bytes() == colon.latest_config
+    assert (instance_folder / "fi_a_2" / "config.json").read_bytes() == slash.latest_config
+    files = [d["files"]["config"] for d in read_summary(tmp_path)["devices"]]
+    assert files == [f"{instance_folder.name}/fi_a/config.json", f"{instance_folder.name}/fi_a_2/config.json"]
+
+
 def test_instances_are_extracted_at_the_same_time(
     run_extract_from: RunExtractFrom, fake_easyucs: FakeEasyUCS, other_easyucs: FakeEasyUCS, tmp_path: Path
 ) -> None:
@@ -689,7 +705,7 @@ def test_instances_are_extracted_at_the_same_time(
     fi_a = fake_easyucs.add_device("fi-a", "ucsm")
     central = other_easyucs.add_device("central", "ucsc")
 
-    result = run_extract_from(["--url", fake_easyucs.url, "--url", other_easyucs.url], tmp_path, *SLOW_POLLING)
+    result = run_extract_from(["--url", fake_easyucs.url, "--url", other_easyucs.url], tmp_path, *BRIEF_POLL_INTERVAL)
 
     assert result.exit_code == 0, result.output
     assert fi_a.fetch_started_at is not None and central.fetch_started_at is not None
@@ -712,7 +728,7 @@ def test_in_a_parallel_run_a_failing_device_or_instance_does_not_affect_the_othe
     )
 
     result = run_extract_from(
-        ["--instances", str(instances_file)], tmp_path / "out", "--timeout", "0.5s", *SLOW_POLLING
+        ["--instances", str(instances_file)], tmp_path / "out", "--timeout", "0.5s", *BRIEF_POLL_INTERVAL
     )
 
     assert result.exit_code == 1
@@ -742,11 +758,14 @@ def test_each_device_has_a_progress_bar_that_ends_showing_its_outcome(
 ) -> None:
     fake_easyucs.add_device("fi-a", "ucsm")
     fake_easyucs.add_device("rack-01", "cimc", task_outcome="failed", task_message="Unable to connect")
+    fake_easyucs.add_device("central", "ucsc", task_outcome="in_progress")
     instance = re.escape(f"127.0.0.1_{fake_easyucs.port}")
 
-    result = run_extract(fake_easyucs.url, tmp_path)
+    result = run_extract(fake_easyucs.url, tmp_path, "--timeout", "0.2s")
 
     assert result.exit_code == 1
     progress = result.output[: result.output.index("Extraction summary")]
     assert re.search(rf"{instance} / fi-a \(ucsm\).*100%.*succeeded", progress)
     assert re.search(rf"{instance} / rack-01 \(cimc\).*failed", progress)
+    # Stuck at 50% of its Config Fetch, the first of its two tasks.
+    assert re.search(rf"{instance} / central \(ucsc\).* 25%.*failed", progress)

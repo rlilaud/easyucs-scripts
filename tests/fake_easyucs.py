@@ -10,7 +10,7 @@ every Fetch request it receives. Setting `FakeEasyUCS.error` makes every request
 
 A Device's Fetch lasts from its Config Fetch request until its Inventory task ends, or until
 any of its tasks fails. Setting `FakeEasyUCS.task_seconds` keeps every task `in_progress` for at
-least that long, so Fetches overlap. The fake records the peak number of Devices being Fetched
+least that long, so Fetches overlap; a Device's own `task_seconds` can make its tasks longer. The fake records the peak number of Devices being Fetched
 at once in `peak_concurrent_fetches`, and when each Device's Fetch started and finished.
 
 The behaviour mirrors a real EasyUCS 1.0.6 where it differs from its published OpenAPI spec:
@@ -53,6 +53,7 @@ class FakeDevice:
     fetch_error: Optional[str]
     task_outcome: str
     task_message: Optional[str]
+    task_seconds: float = 0.0
     uuid: str = field(default_factory=lambda: str(uuid.uuid4()))
     configs: list[StoredArtifact] = field(default_factory=list)
     inventories: list[StoredArtifact] = field(default_factory=list)
@@ -125,13 +126,15 @@ class FakeEasyUCS:
         fetch_error: Optional[str] = None,
         task_outcome: str = "successful",
         task_message: Optional[str] = None,
+        task_seconds: float = 0.0,
         stored_config: bool = True,
         stored_inventory: bool = True,
     ) -> FakeDevice:
         """Add a Device, with one stored Config and Inventory unless told otherwise.
 
         With `fetch_error`, EasyUCS refuses its Fetches with HTTP 500 and that message. Its Fetch
-        tasks end with status `task_outcome` and `task_message`; `in_progress` never ends.
+        tasks end with status `task_outcome` and `task_message`, after at least `task_seconds`;
+        `in_progress` never ends.
         """
         device = FakeDevice(
             name=name,
@@ -140,6 +143,7 @@ class FakeEasyUCS:
             fetch_error=fetch_error,
             task_outcome=task_outcome,
             task_message=task_message,
+            task_seconds=task_seconds,
         )
         if stored_config:
             self._store_artifact(device, "configs")
@@ -225,7 +229,8 @@ class FakeEasyUCS:
             status = _TASK_STATUSES_BEFORE_OUTCOME[task.polls - 1]
             return {**payload, "status": status, "progress": 0 if status == "pending" else 50}
         outcome = task.device.task_outcome
-        if outcome == "in_progress" or time.monotonic() - task.started_at < self.task_seconds:
+        task_seconds = max(self.task_seconds, task.device.task_seconds)
+        if outcome == "in_progress" or time.monotonic() - task.started_at < task_seconds:
             return {**payload, "status": "in_progress", "progress": 50}
         if not task.ended:
             task.ended = True
@@ -243,7 +248,8 @@ class FakeEasyUCS:
                 device.configs_fetched += 1
             else:
                 device.inventories_fetched += 1
-        if (task.collection == "inventories" or device.task_outcome != "successful") and device.uuid in self._fetching:
+        fetch_over = task.collection == "inventories" or device.task_outcome != "successful"
+        if fetch_over and device.uuid in self._fetching:
             self._fetching.discard(device.uuid)
             device.fetch_finished_at = time.monotonic()
 
