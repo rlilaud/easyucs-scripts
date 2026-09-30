@@ -391,6 +391,7 @@ def test_summary_records_run_parameters_and_the_outcome_and_files_of_every_devic
         "no_fetch": False,
         "force": True,
         "timeout_seconds": 300,
+        "workers": 4,
     }
     assert summary["succeeded"] is False
     assert summary["instances"] == [{"name": instance, "url": fake_easyucs.url, "outcome": "succeeded", "reason": None}]
@@ -639,3 +640,132 @@ def test_instances_whose_safe_names_clash_get_distinct_folders(
     assert_saved(run_folder / "lab_a_2", fi_b)
     files = [d["files"]["config"] for d in read_summary(tmp_path / "out")["devices"]]
     assert files == ["lab_a/fi-a/config.json", "lab_a_2/fi-b/config.json"]
+
+
+BRIEF_POLL_INTERVAL = ("--poll-interval", "0.01")
+
+
+def test_workers_bounds_the_devices_fetched_at_once_in_an_instance(
+    run_extract: RunExtract, fake_easyucs: FakeEasyUCS, tmp_path: Path
+) -> None:
+    fake_easyucs.task_seconds = 0.1
+    for index in range(5):
+        fake_easyucs.add_device(f"fi-{index}", "ucsm")
+
+    result = run_extract(fake_easyucs.url, tmp_path, "--workers", "2", *BRIEF_POLL_INTERVAL)
+
+    assert result.exit_code == 0, result.output
+    assert fake_easyucs.peak_concurrent_fetches == 2
+    assert len(list(only_instance_folder(tmp_path).iterdir())) == 5
+
+
+def test_four_devices_of_an_instance_are_fetched_at_once_by_default(
+    run_extract: RunExtract, fake_easyucs: FakeEasyUCS, tmp_path: Path
+) -> None:
+    fake_easyucs.task_seconds = 0.1
+    for index in range(6):
+        fake_easyucs.add_device(f"fi-{index}", "ucsm")
+
+    result = run_extract(fake_easyucs.url, tmp_path, *BRIEF_POLL_INTERVAL)
+
+    assert result.exit_code == 0, result.output
+    assert fake_easyucs.peak_concurrent_fetches == 4
+
+
+def test_workers_must_be_at_least_one(run_extract: RunExtract, fake_easyucs: FakeEasyUCS, tmp_path: Path) -> None:
+    device = fake_easyucs.add_device("fi-a", "ucsm")
+
+    result = run_extract(fake_easyucs.url, tmp_path, "--workers", "0")
+
+    assert result.exit_code == 2
+    assert "--workers" in result.output
+    assert device.fetch_forces == []
+
+
+def test_devices_whose_safe_names_clash_get_folders_in_listing_order_whichever_finishes_first(
+    run_extract: RunExtract, fake_easyucs: FakeEasyUCS, tmp_path: Path
+) -> None:
+    colon = fake_easyucs.add_device("fi:a", "ucsm", task_seconds=0.3)
+    slash = fake_easyucs.add_device("fi/a", "ucsm")
+
+    result = run_extract(fake_easyucs.url, tmp_path, *BRIEF_POLL_INTERVAL)
+
+    assert result.exit_code == 0, result.output
+    instance_folder = only_instance_folder(tmp_path)
+    assert (instance_folder / "fi_a" / "config.json").read_bytes() == colon.latest_config
+    assert (instance_folder / "fi_a_2" / "config.json").read_bytes() == slash.latest_config
+    files = [d["files"]["config"] for d in read_summary(tmp_path)["devices"]]
+    assert files == [f"{instance_folder.name}/fi_a/config.json", f"{instance_folder.name}/fi_a_2/config.json"]
+
+
+def test_instances_are_extracted_at_the_same_time(
+    run_extract_from: RunExtractFrom, fake_easyucs: FakeEasyUCS, other_easyucs: FakeEasyUCS, tmp_path: Path
+) -> None:
+    fake_easyucs.task_seconds = other_easyucs.task_seconds = 0.2
+    fi_a = fake_easyucs.add_device("fi-a", "ucsm")
+    central = other_easyucs.add_device("central", "ucsc")
+
+    result = run_extract_from(["--url", fake_easyucs.url, "--url", other_easyucs.url], tmp_path, *BRIEF_POLL_INTERVAL)
+
+    assert result.exit_code == 0, result.output
+    assert fi_a.fetch_started_at is not None and central.fetch_started_at is not None
+    assert fi_a.fetch_finished_at is not None and central.fetch_finished_at is not None
+    assert max(fi_a.fetch_started_at, central.fetch_started_at) < min(fi_a.fetch_finished_at, central.fetch_finished_at)
+
+
+def test_in_a_parallel_run_a_failing_device_or_instance_does_not_affect_the_others(
+    run_extract_from: RunExtractFrom, fake_easyucs: FakeEasyUCS, other_easyucs: FakeEasyUCS, tmp_path: Path
+) -> None:
+    fake_easyucs.task_seconds = other_easyucs.task_seconds = 0.1
+    fake_easyucs.add_device("fi-a", "ucsm", task_outcome="failed", task_message="Unable to connect to fi-a")
+    rack = fake_easyucs.add_device("rack-01", "cimc")
+    fake_easyucs.add_device("fi-b", "ucsm", task_outcome="in_progress")
+    central = fake_easyucs.add_device("central", "ucsc")
+    lab_dc = other_easyucs.add_device("LabDC", "intersight")
+    down_url = f"http://127.0.0.1:{closed_port()}"
+    instances_file = write_instances_file(
+        tmp_path, [("paris", fake_easyucs.url), ("down", down_url), ("lyon", other_easyucs.url)]
+    )
+
+    result = run_extract_from(
+        ["--instances", str(instances_file)], tmp_path / "out", "--timeout", "0.5s", *BRIEF_POLL_INTERVAL
+    )
+
+    assert result.exit_code == 1
+    run_folder = only_child(tmp_path / "out")
+    assert sorted(p.name for p in (run_folder / "paris").iterdir()) == ["central", "rack-01"]
+    assert_saved(run_folder / "paris", rack)
+    assert_saved(run_folder / "paris", central)
+    assert_saved(run_folder / "lyon", lab_dc)
+    summary = read_summary(tmp_path / "out")
+    assert summary["succeeded"] is False
+    assert [(i["name"], i["outcome"]) for i in summary["instances"]] == [
+        ("paris", "succeeded"),
+        ("down", "failed"),
+        ("lyon", "succeeded"),
+    ]
+    assert [(d["instance"], d["name"], d["outcome"]) for d in summary["devices"]] == [
+        ("paris", "fi-a", "failed"),
+        ("paris", "rack-01", "succeeded"),
+        ("paris", "fi-b", "failed"),
+        ("paris", "central", "succeeded"),
+        ("lyon", "LabDC", "succeeded"),
+    ]
+
+
+def test_each_device_has_a_progress_bar_that_ends_showing_its_outcome(
+    run_extract: RunExtract, fake_easyucs: FakeEasyUCS, tmp_path: Path
+) -> None:
+    fake_easyucs.add_device("fi-a", "ucsm")
+    fake_easyucs.add_device("rack-01", "cimc", task_outcome="failed", task_message="Unable to connect")
+    fake_easyucs.add_device("central", "ucsc", task_outcome="in_progress")
+    instance = re.escape(f"127.0.0.1_{fake_easyucs.port}")
+
+    result = run_extract(fake_easyucs.url, tmp_path, "--timeout", "0.2s")
+
+    assert result.exit_code == 1
+    progress = result.output[: result.output.index("Extraction summary")]
+    assert re.search(rf"{instance} / fi-a \(ucsm\).*100%.*succeeded", progress)
+    assert re.search(rf"{instance} / rack-01 \(cimc\).*failed", progress)
+    # Stuck at 50% of its Config Fetch, the first of its two tasks.
+    assert re.search(rf"{instance} / central \(ucsc\).* 25%.*failed", progress)

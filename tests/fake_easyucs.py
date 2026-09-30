@@ -8,6 +8,11 @@ so tests can tell fresh artifacts from stale ones. Each Device records the `forc
 every Fetch request it receives. Setting `FakeEasyUCS.error` makes every request fail, and
 `FakeEasyUCS.devices_response` replaces the body of the Device listing.
 
+A Device's Fetch lasts from its Config Fetch request until its Inventory task ends, or until
+any of its tasks fails. Setting `FakeEasyUCS.task_seconds` keeps every task `in_progress` for at
+least that long, so Fetches overlap; a Device's own `task_seconds` can make its tasks longer. The fake records the peak number of Devices being Fetched
+at once in `peak_concurrent_fetches`, and when each Device's Fetch started and finished.
+
 The behaviour mirrors a real EasyUCS 1.0.6 where it differs from its published OpenAPI spec:
 tasks are wrapped in `{"task": ...}`, listed artifacts are identified by `uuid`, and task
 statuses include `pending`.
@@ -19,6 +24,7 @@ import itertools
 import json
 import re
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -47,12 +53,15 @@ class FakeDevice:
     fetch_error: Optional[str]
     task_outcome: str
     task_message: Optional[str]
+    task_seconds: float = 0.0
     uuid: str = field(default_factory=lambda: str(uuid.uuid4()))
     configs: list[StoredArtifact] = field(default_factory=list)
     inventories: list[StoredArtifact] = field(default_factory=list)
     fetch_forces: list[Any] = field(default_factory=list)
     configs_fetched: int = 0
     inventories_fetched: int = 0
+    fetch_started_at: Optional[float] = None
+    fetch_finished_at: Optional[float] = None
 
     @property
     def latest_config(self) -> bytes:
@@ -67,7 +76,9 @@ class FakeDevice:
 class _FetchTask:
     device: FakeDevice
     collection: str
+    started_at: float = field(default_factory=time.monotonic)
     polls: int = 0
+    ended: bool = False
 
 
 class FakeEasyUCS:
@@ -75,6 +86,9 @@ class FakeEasyUCS:
         self.devices: list[FakeDevice] = []
         self.error: Optional[tuple[int, str]] = None
         self.devices_response: Optional[Any] = None
+        self.task_seconds = 0.0
+        self.peak_concurrent_fetches = 0
+        self._fetching: set[str] = set()
         self._tasks: dict[str, _FetchTask] = {}
         self._clock = itertools.count(1)
         self._lock = threading.Lock()
@@ -112,13 +126,15 @@ class FakeEasyUCS:
         fetch_error: Optional[str] = None,
         task_outcome: str = "successful",
         task_message: Optional[str] = None,
+        task_seconds: float = 0.0,
         stored_config: bool = True,
         stored_inventory: bool = True,
     ) -> FakeDevice:
         """Add a Device, with one stored Config and Inventory unless told otherwise.
 
         With `fetch_error`, EasyUCS refuses its Fetches with HTTP 500 and that message. Its Fetch
-        tasks end with status `task_outcome` and `task_message`; `in_progress` never ends.
+        tasks end with status `task_outcome` and `task_message`, after at least `task_seconds`;
+        `in_progress` never ends.
         """
         device = FakeDevice(
             name=name,
@@ -127,6 +143,7 @@ class FakeEasyUCS:
             fetch_error=fetch_error,
             task_outcome=task_outcome,
             task_message=task_message,
+            task_seconds=task_seconds,
         )
         if stored_config:
             self._store_artifact(device, "configs")
@@ -196,6 +213,10 @@ class FakeEasyUCS:
             return 500, {"message": "Catalog Devices cannot be fetched"}
         if device.fetch_error is not None:
             return 500, {"message": device.fetch_error}
+        if collection == "configs":
+            self._fetching.add(device.uuid)
+            self.peak_concurrent_fetches = max(self.peak_concurrent_fetches, len(self._fetching))
+            device.fetch_started_at = time.monotonic()
         task_uuid = str(uuid.uuid4())
         self._tasks[task_uuid] = _FetchTask(device=device, collection=collection)
         return 200, {"task": task_uuid}
@@ -205,20 +226,32 @@ class FakeEasyUCS:
         task.polls += 1
         payload = {"uuid": task_uuid, "device_uuid": task.device.uuid, "device_name": task.device.name}
         if task.polls <= len(_TASK_STATUSES_BEFORE_OUTCOME):
-            return {**payload, "status": _TASK_STATUSES_BEFORE_OUTCOME[task.polls - 1], "progress": 50}
+            status = _TASK_STATUSES_BEFORE_OUTCOME[task.polls - 1]
+            return {**payload, "status": status, "progress": 0 if status == "pending" else 50}
         outcome = task.device.task_outcome
-        if outcome == "in_progress":
+        task_seconds = max(self.task_seconds, task.device.task_seconds)
+        if outcome == "in_progress" or time.monotonic() - task.started_at < task_seconds:
             return {**payload, "status": "in_progress", "progress": 50}
+        if not task.ended:
+            task.ended = True
+            self._end_task(task)
         if outcome == "successful":
-            if task.polls == len(_TASK_STATUSES_BEFORE_OUTCOME) + 1:
-                self._store_artifact(task.device, task.collection)
-                if task.collection == "configs":
-                    task.device.configs_fetched += 1
-                else:
-                    task.device.inventories_fetched += 1
             message = task.device.task_message or "Successfully completed task"
             return {**payload, "status": "successful", "progress": 100, "status_message": message}
         return {**payload, "status": outcome, "progress": 100, "status_message": task.device.task_message}
+
+    def _end_task(self, task: _FetchTask) -> None:
+        device = task.device
+        if device.task_outcome == "successful":
+            self._store_artifact(device, task.collection)
+            if task.collection == "configs":
+                device.configs_fetched += 1
+            else:
+                device.inventories_fetched += 1
+        fetch_over = task.collection == "inventories" or device.task_outcome != "successful"
+        if fetch_over and device.uuid in self._fetching:
+            self._fetching.discard(device.uuid)
+            device.fetch_finished_at = time.monotonic()
 
 
 def _device_payload(device: FakeDevice) -> dict[str, Any]:
