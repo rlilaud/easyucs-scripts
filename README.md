@@ -1,4 +1,4 @@
-# easyucs-scripts
+# EasyUCS Scripts
 
 `eucs` is a command-line tool that saves the **Config** and **Inventory** of every **Device** managed by one or more EasyUCS **Instances**, in one run, without clicking through each Instance's UI.
 
